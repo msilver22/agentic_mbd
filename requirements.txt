@@ -1,0 +1,13 @@
+langgraph==0.3.0
+langgraph-sdk
+langgraph-checkpoint-sqlite
+langsmith
+langchain-community
+langchain-core
+langchain-groq
+notebook
+tavily-python
+wikipedia
+trustcall
+langgraph-cli[inmem]
+streamlit
