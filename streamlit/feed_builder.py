@@ -162,9 +162,12 @@ if prompt := st.chat_input("Ask anything"):
     # Invoke LangGraph with memory
     response = graph_memory.invoke({"messages": full_history}, config)
     bot_reply = response["messages"][-1].content
+    second_to_last_bot_reply = response["messages"][-2]
 
     # Display assistant reply
     with st.chat_message("assistant"):
+        if second_to_last_bot_reply.type == "tool":
+            st.write(response["messages"][-3].additional_kwargs)
         st.write(bot_reply)
 
     # Store assistant reply
