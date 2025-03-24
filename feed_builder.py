@@ -60,12 +60,49 @@ def get_personalized_feed(user_id: str) -> str:
     input_for_llm = extract_cast_info(json.loads(response.text))
     return input_for_llm
 
+# Tool 2: Trending Cast
+def get_trending_cast() -> List[dict]:
+    """
+    Get trending posts.
+    """
+    url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
+    payload = {
+        "top_k": 2,
+        "feed_id": "feed_405",
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {mbd_api_key}"
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    input_for_llm = extract_cast_info(json.loads(response.text))
+    return input_for_llm
+
+# Tool 3: Popular Cast
+def get_popular_cast() -> List[dict]:
+    """
+    Get popular posts.
+    """
+    url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
+    payload = {
+        "top_k": 2,
+        "feed_id": "feed_404",
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {mbd_api_key}"
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    input_for_llm = extract_cast_info(json.loads(response.text))
+    return input_for_llm
+
 # Small model for summarization
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # Define LLM with bind tools
-#mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast, get_semantic_cast]
-mbd_tools = [get_personalized_feed]
+mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
@@ -99,15 +136,16 @@ sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed dat
 "If they ask for a personalized feed but don’t provide a valid user_id (a number with max 8 digits), ask them for it."
 "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "If you receive a result from tool, respond to user in natural language using this format: @{author} says: {text}."
+"You can also use the following tools: get_trending_cast, get_popular_cast."
 )
 
 # Node for feed_builder
 def feed_builder(state: FeedState):
     if state["summary"] is not None:
         if state["messages"][-1].type == 'tool':
-            return {"messages": [llm_with_tools.invoke([sys_msg, HumanMessage(content=state["summary"])]+ state["messages"][-2:])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ state["messages"][-2:])]} 
         else: 
-            return {"messages": [llm_with_tools.invoke([sys_msg, HumanMessage(content=state["summary"])]+ [state["messages"][-1]])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ [state["messages"][-1]])]} 
     else:
         return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
 
