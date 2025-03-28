@@ -2,6 +2,7 @@ langgraph==0.3.0
 langgraph-sdk
 langgraph-checkpoint-sqlite
 langsmith
+langfuse
 langchain-community
 langchain-core
 langchain-groq

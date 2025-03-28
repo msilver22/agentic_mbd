@@ -3,21 +3,28 @@ from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
 from IPython.display import Image
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import List, Optional
 import requests
 import os
 import json
-import logging
+from langfuse.callback import CallbackHandler
 
-
-
+# ---- API keys ---- #
 load_dotenv()
 mbd_api_key = os.getenv("MBD_API_KEY")
 
+# ---- Langfuse cloud ----#
+langfuse_handler = CallbackHandler(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host="https://cloud.langfuse.com" 
+)
 
+
+# ---- Utils ---- #
 def extract_cast_info(api_response: json) -> dict:
     """
     Extract cast information from the API response.
@@ -48,7 +55,7 @@ def get_personalized_feed(user_id: str) -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/for-you"
     payload = {
         "user_id": user_id,
-        "top_k": 1,
+        "top_k": 3,
         "feed_id": "feed_352",
     }
     headers = {
@@ -98,34 +105,48 @@ def get_popular_cast() -> List[dict]:
     input_for_llm = extract_cast_info(json.loads(response.text))
     return input_for_llm
 
+
+# ---- Models ---- #
+
 # Small model for summarization
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
-# Define LLM with bind tools
+# Big model with tools
 mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
-# Custom feed state
+
+# ---- State ---- #
+
 class FeedState(MessagesState):
-    summary : Optional[str]=None
+    summary : Optional[str] = None
+
+# ---- Nodes ---- #
 
 # Node for summarizing history
 def summarize_history(state: FeedState):
     messages = state["messages"]
-    if len(messages) <= 2:
-        return {"messages": messages, "summary": None}
-    
-    history_text = "\n".join(
-        [f"{m.type.upper()}: {m.content}" for m in messages]
-    )
-    summary_prompt = ("You are a summarization assistant helping another AI agent stay informed with minimal context."
-    "Summarize only the essential highlights of the conversation in a very concise manner, so that the agent knows all the steps taken."
-    "The summary follow the format: 'User says: {text}'. AI says {text}."
-    "If the user gives personal information, like a user id, focus on that."
-    "About the AI responses, focus just on the main points, like the tool called and NOT the results."
+    summary = state["summary"]
+
+    history_text = ""
+    if len(messages) == 1:
+        history_text = messages[0].content
+    else:
+        history_text = "\n\n".join(
+            [f"{m.type.upper()}: {m.content}" for m in messages[:-1]]
+        )
+
+    summary_prompt = (
+    "You are a summarization assistant. Your only task is to condense a conversation as much as possible."
+    "Paraphrase the conversation in a concise way, preserving the meaning and intent of the original messages."
+    "Preserve all user-provided details, especially personal information like user IDs, names, or preferences."
+    "For AI responses, omit them entirely unless they involve a critical step (e.g., a tool call). "
+    "If the AI response includes tool results like user-generated content (e.g., posts, authors, texts), "
+    "do not include them in the summary, only mention that a tool was called."
     f"\n\nConversation:\n\n{history_text}"
     )
+
     summary_output = summarizer_llm.invoke(summary_prompt)
     summarized_context = summary_output.content
     return {"summary": summarized_context, "messages": messages}
@@ -137,26 +158,37 @@ sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed dat
 "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "If you receive a result from tool, respond to user in natural language using this format: @{author} says: {text}."
 "You can also use the following tools: get_trending_cast, get_popular_cast."
+"If the user asks for its personal information, first check if it's present in the summary."
+"If it's not included, politely inform the user that it cannot be remembered."
 )
 
 # Node for feed_builder
 def feed_builder(state: FeedState):
     if state["summary"] is not None:
+        sys_summary = SystemMessage(
+            content=(
+                "This is your memory summary of the conversation so far.\n"
+                "Before answering, always check if the required information is already included below.\n\n"
+                f"--- BEGIN SUMMARY ---\n{state['summary']}\n--- END SUMMARY ---"
+            )
+        )
         if state["messages"][-1].type == 'tool':
-            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ state["messages"][-2:])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg]+ state["messages"][-2:])]} 
         else: 
-            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ [state["messages"][-1]])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg, sys_summary]+ [state["messages"][-1]])]} 
     else:
         return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
 
 
-# Build graph
+
+# ---- Graph ---- #
+
 builder = StateGraph(FeedState)
-builder.add_node("summarize_history", summarize_history)
+builder.add_node("summarizer", summarize_history)
 builder.add_node("feed_builder", feed_builder)
-builder.add_node("tools", ToolNode(mbd_tools))
-builder.add_edge(START, "summarize_history")
-builder.add_edge("summarize_history", "feed_builder")
+builder.add_node("tools", ToolNode(tools = mbd_tools))
+builder.add_edge(START, "summarizer")
+builder.add_edge("summarizer", "feed_builder")
 builder.add_conditional_edges(
     "feed_builder",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
@@ -167,36 +199,42 @@ builder.add_edge("tools", "feed_builder")
 # Memory
 memory = MemorySaver()
 # Compile graph
-graph_memory = builder.compile(checkpointer=memory)
+agent_feed_builder = builder.compile(checkpointer=memory)
 # Visualize graph
-visualize_graph = False
+visualize_graph = True
 if visualize_graph:
-    image = Image(graph_memory.get_graph().draw_mermaid_png())
+    image = Image(agent_feed_builder.get_graph().draw_mermaid_png())
     with open("graphs/feed_builder.png", "wb") as f:
         f.write(image.data)
 # Config for memory
-config = {"configurable": {"thread_id": "2"}}
+config = {
+    "configurable": {"thread_id": "2"},
+    "callbacks": [langfuse_handler],
+}
 
 
-# ---- Hello World Example ---- #   
+
+# ---- Examples ---- #
+
+# Hello World Example  
 
 messages = [HumanMessage(content="Hello World! I'm Matteo.")]
-messages = graph_memory.invoke({"messages": messages}, config)
+messages = agent_feed_builder.invoke({"messages": messages, "summary": None}, config)
 for m in messages['messages']:
     m.pretty_print()
 
-# ---- Personalized Feed Example ---- #
+# Personalized Feed Example 
 
-#messages = [HumanMessage(content="Give me the personalized feed.")]
-#messages = graph_memory.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
-#messages = [HumanMessage(content="My user id is 123.")]
-#messages = graph_memory.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
-#messages = [HumanMessage(content="What is my user id?")]
-#messages = graph_memory.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
+messages = [HumanMessage(content="Give me the personalized feed.")]
+messages = agent_feed_builder.invoke({"messages": messages}, config)
+for m in messages['messages']:
+    m.pretty_print()
+messages = [HumanMessage(content="My user id is 123.")]
+messages = agent_feed_builder.invoke({"messages": messages}, config)
+for m in messages['messages']:
+    m.pretty_print()
+messages = [HumanMessage(content="What is my user id?")]
+messages = agent_feed_builder.invoke({"messages": messages}, config)
+for m in messages['messages']:
+    m.pretty_print()
 
