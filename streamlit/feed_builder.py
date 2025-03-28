@@ -3,7 +3,6 @@ from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
-from IPython.display import Image
 from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
@@ -12,12 +11,25 @@ import requests
 import os
 import streamlit as st
 import json
+from langfuse.callback import CallbackHandler
 
+
+st.title("Feed Builder")
+
+
+# ---- API keys ---- #
 load_dotenv()
 mbd_api_key = os.getenv("MBD_API_KEY")
 
-# ---- Utils ---- #
+# ---- Langfuse cloud ----#
+langfuse_handler = CallbackHandler(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host="https://cloud.langfuse.com" 
+)
 
+
+# ---- Utils ---- #
 def extract_cast_info(api_response: json) -> dict:
     """
     Extract cast information from the API response.
@@ -97,35 +109,47 @@ def get_popular_cast() -> List[dict]:
     input_for_llm = extract_cast_info(json.loads(response.text))
     return input_for_llm
 
+
+# ---- Models ---- #
+
 # Small model for summarization
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
-
-# Define LLM with bind tools
+# Big model with tools
 mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
-# Custom feed state
+# ---- State ---- #
+
 class FeedState(MessagesState):
-    conversation: List[str]=[]
-    summary : Optional[str]=None
+    summary : Optional[str] = None
+
+# ---- Nodes ---- #
 
 # Node for summarizing history
 def summarize_history(state: FeedState):
     messages = state["messages"]
-    if len(messages) <= 2:
-        return {"messages": messages, "summary": None}
-    
-    history_text = "\n".join(
-        [f"{m.type.upper()}: {m.content}" for m in messages]
-    )
-    summary_prompt = ("You are a summarization assistant helping another AI agent stay informed with minimal context."
-    "Summarize only the essential highlights of the conversation in a very concise manner, so that the agent knows all the steps taken."
-    "The summary follow the format: 'User says: {text}'. AI says {text}."
-    "About the AI responses, focus just on the main points, like the tool called and NOT the results (e.g. users and texts)."
+    summary = state["summary"]
+
+    history_text = ""
+    if len(messages) == 1:
+        history_text = messages[0].content
+    else:
+        history_text = "\n\n".join(
+            [f"{m.type.upper()}: {m.content}" for m in messages[:-1]]
+        )
+
+    summary_prompt = (
+    "You are a summarization assistant. Your only task is to condense a conversation as much as possible."
+    "Paraphrase the conversation in a concise way, preserving the meaning and intent of the original messages."
+    "Preserve all user-provided details, especially personal information like user IDs, names, or preferences."
+    "For AI responses, omit them entirely unless they involve a critical step (e.g., a tool call). "
+    "If the AI response includes tool results like user-generated content (e.g., posts, authors, texts), "
+    "do not include them in the summary, only mention that a tool was called."
     f"\n\nConversation:\n\n{history_text}"
     )
+
     summary_output = summarizer_llm.invoke(summary_prompt)
     summarized_context = summary_output.content
     return {"summary": summarized_context, "messages": messages}
@@ -137,25 +161,38 @@ sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed dat
 "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "If you receive a result from tool, respond to user in natural language using this format: @{author} says: {text}."
 "You can also use the following tools: get_trending_cast, get_popular_cast."
+"If the user asks for its personal information, first check if it's present in the summary."
+"If it's not included, politely inform the user that it cannot be remembered."
 )
 
 # Node for feed_builder
 def feed_builder(state: FeedState):
     if state["summary"] is not None:
+        sys_summary = SystemMessage(
+            content=(
+                "This is your memory summary of the conversation so far.\n"
+                "Before answering, always check if the required information is already included below.\n\n"
+                f"--- BEGIN SUMMARY ---\n{state['summary']}\n--- END SUMMARY ---"
+            )
+        )
         if state["messages"][-1].type == 'tool':
-            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ state["messages"][-2:])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg]+ state["messages"][-2:])]} 
         else: 
-            return {"messages": [llm_with_tools.invoke([sys_msg, SystemMessage(content=state["summary"])]+ [state["messages"][-1]])]} 
+            return {"messages": [llm_with_tools.invoke([sys_msg, sys_summary]+ [state["messages"][-1]])]} 
     else:
         return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
 
-# Build graph
+
+
+
+# ---- Graph ---- #
+
 builder = StateGraph(FeedState)
-builder.add_node("summarize_history", summarize_history)
+builder.add_node("summarizer", summarize_history)
 builder.add_node("feed_builder", feed_builder)
-builder.add_node("tools", ToolNode(mbd_tools))
-builder.add_edge(START, "summarize_history")
-builder.add_edge("summarize_history", "feed_builder")
+builder.add_node("tools", ToolNode(tools = mbd_tools))
+builder.add_edge(START, "summarizer")
+builder.add_edge("summarizer", "feed_builder")
 builder.add_conditional_edges(
     "feed_builder",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
@@ -163,19 +200,24 @@ builder.add_conditional_edges(
     tools_condition,
 )
 builder.add_edge("tools", "feed_builder")
-# Memory
-memory = MemorySaver()
-# Compile graph
-graph_memory = builder.compile(checkpointer=memory)
-# Config for memory
-config = {"configurable": {"thread_id": "2"}}
 
+if "memory" not in st.session_state:
+    st.session_state.memory = MemorySaver()
 
-# Streamlit UI
-st.title("Feed Builder")
+if "agent" not in st.session_state:
+    st.session_state.agent_feed_builder = builder.compile(checkpointer=st.session_state.memory)
+
+if "config" not in st.session_state:
+    st.session_state.config = {
+        "configurable": {"thread_id": "2"},
+        "callbacks": [langfuse_handler],
+    }
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
+
+
+# ---- Streamlit UI ---- #
 
 # Display past messages
 for msg in st.session_state["messages"]:
@@ -190,23 +232,22 @@ if prompt := st.chat_input("Ask anything"):
 
     # Add user message to session
     st.session_state["messages"].append({"role": "user", "content": prompt})
+    messages = [HumanMessage(content=prompt)]
 
-    # Build full message history for LangGraph
-    full_history = []
-    for msg in st.session_state["messages"]:
-        if msg["role"] == "user":
-            full_history.append(HumanMessage(content=msg["content"]))
-        elif msg["role"] == "assistant":
-            full_history.append(AIMessage(content=msg["content"]))
-
-    # Invoke LangGraph with memory
-    response = graph_memory.invoke({"messages": full_history}, config)
-    bot_reply = response["messages"][-1].content
-    second_to_last_bot_reply = response["messages"][-2]
-
+    # Invoke the agent with the user input
+    agent = st.session_state.agent_feed_builder
+    config = st.session_state.config
+    if len(st.session_state["messages"]) == 1:
+        response = agent.invoke({"messages": messages, "summary": None}, config)
+    else: 
+        response = agent.invoke({"messages": messages}, config)
+   
     # Display assistant reply
+    bot_reply = response["messages"][-1].content
+    second_to_last_reply = response["messages"][-2]
+
     with st.chat_message("assistant"):
-        if second_to_last_bot_reply.type == "tool":
+        if second_to_last_reply.type == "tool":
             st.write(response["messages"][-3].additional_kwargs)
         st.write(bot_reply)
 
