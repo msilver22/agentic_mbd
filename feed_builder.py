@@ -1,16 +1,17 @@
-from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
 from IPython.display import Image
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import List, Optional
+from typing_extensions import TypedDict
 import requests
 import os
 import json
 from langfuse.callback import CallbackHandler
+import logging
 
 # ---- API keys ---- #
 load_dotenv()
@@ -25,21 +26,23 @@ langfuse_handler = CallbackHandler(
 
 
 # ---- Utils ---- #
-def extract_cast_info(api_response: json) -> dict:
+def extract_casts(api_response: dict) -> str:
     """
-    Extract cast information from the API response.
+    Extract cast information from the API response and return as Markdown text.
     """
-    casts = []
     if api_response['status_code'] != 200:
         raise ValueError(f"API response failed: {api_response['body']}")
-    else:
-        for cast in api_response["body"]:
-            cast_info = {
-                "author": cast["metadata"]["author"]["username"],
-                "text": cast["metadata"]["text"],
-            }
-            casts.append(cast_info)
-    return casts
+    
+    markdown_output = ""
+    casts = api_response["body"]
+    
+    for i, cast in enumerate(casts, 1):
+        author = cast["metadata"]["author"]["username"]
+        text = cast["metadata"]["text"]
+        
+        markdown_output += f"# {i}. Author: {author}\n> {text}\n\n"
+
+    return markdown_output
 
 
 # ---- Tools ---- #
@@ -64,17 +67,17 @@ def get_personalized_feed(user_id: str) -> str:
         "authorization": f"Bearer {mbd_api_key}"
     }
     response = requests.post(url, json=payload, headers=headers)
-    input_for_llm = extract_cast_info(json.loads(response.text))
-    return input_for_llm
+    fetched_results = extract_casts(json.loads(response.text))
+    return fetched_results
 
 # Tool 2: Trending Cast
-def get_trending_cast() -> List[dict]:
+def get_trending_cast() -> str:
     """
     Get trending posts.
     """
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
     payload = {
-        "top_k": 2,
+        "top_k": 3,
         "feed_id": "feed_405",
     }
     headers = {
@@ -83,17 +86,17 @@ def get_trending_cast() -> List[dict]:
         "authorization": f"Bearer {mbd_api_key}"
     }
     response = requests.post(url, json=payload, headers=headers)
-    input_for_llm = extract_cast_info(json.loads(response.text))
-    return input_for_llm
+    fetched_results = extract_casts(json.loads(response.text))
+    return fetched_results
 
 # Tool 3: Popular Cast
-def get_popular_cast() -> List[dict]:
+def get_popular_cast() -> str:
     """
     Get popular posts.
     """
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
     payload = {
-        "top_k": 2,
+        "top_k": 3,
         "feed_id": "feed_404",
     }
     headers = {
@@ -102,8 +105,8 @@ def get_popular_cast() -> List[dict]:
         "authorization": f"Bearer {mbd_api_key}"
     }
     response = requests.post(url, json=payload, headers=headers)
-    input_for_llm = extract_cast_info(json.loads(response.text))
-    return input_for_llm
+    fetched_results = extract_casts(json.loads(response.text))
+    return fetched_results
 
 
 # ---- Models ---- #
@@ -117,7 +120,7 @@ llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
 
-# ---- State ---- #
+# ---- State of the graph ---- #
 
 class FeedState(MessagesState):
     summary : Optional[str] = None
@@ -127,8 +130,11 @@ class FeedState(MessagesState):
 # Node for summarizing history
 def summarize_history(state: FeedState):
     messages = state["messages"]
-    summary = state["summary"]
-
+    # Check if the last message is a feed illustration
+    # If so, change it from the messages list so that the input tokens are optimized
+    if len(messages) > 1:
+        if messages[-2].content.startswith("We fetched"):
+            state["messages"][-2].content = "AI showed fetched results."
     history_text = ""
     if len(messages) == 1:
         history_text = messages[0].content
@@ -178,7 +184,17 @@ def feed_builder(state: FeedState):
             return {"messages": [llm_with_tools.invoke([sys_msg, sys_summary]+ [state["messages"][-1]])]} 
     else:
         return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
+    
 
+# Node for printing results
+def feed_printer(state: FeedState):
+    """
+    Print the fetched results.
+    """
+    results = state["messages"][-1].content
+    state["messages"][-1].content = "Tool executed successfully."
+    return {"messages": [AIMessage(content="We fetched the following casts:\n\n" + results)]}
+    
 
 
 # ---- Graph ---- #
@@ -186,6 +202,7 @@ def feed_builder(state: FeedState):
 builder = StateGraph(FeedState)
 builder.add_node("summarizer", summarize_history)
 builder.add_node("feed_builder", feed_builder)
+builder.add_node("feed_printer", feed_printer)
 builder.add_node("tools", ToolNode(tools = mbd_tools))
 builder.add_edge(START, "summarizer")
 builder.add_edge("summarizer", "feed_builder")
@@ -195,7 +212,9 @@ builder.add_conditional_edges(
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
     tools_condition,
 )
-builder.add_edge("tools", "feed_builder")
+builder.add_edge("tools", "feed_printer")
+builder.add_edge("feed_printer", END)
+
 # Memory
 memory = MemorySaver()
 # Compile graph
@@ -203,7 +222,7 @@ agent_feed_builder = builder.compile(checkpointer=memory)
 # Visualize graph
 visualize_graph = True
 if visualize_graph:
-    image = Image(agent_feed_builder.get_graph().draw_mermaid_png())
+    image = Image(agent_feed_builder.get_graph().draw_mermaid_png())  
     with open("graphs/feed_builder.png", "wb") as f:
         f.write(image.data)
 # Config for memory
@@ -218,23 +237,22 @@ config = {
 
 # Hello World Example  
 
-messages = [HumanMessage(content="Hello World! I'm Matteo.")]
-messages = agent_feed_builder.invoke({"messages": messages, "summary": None}, config)
-for m in messages['messages']:
-    m.pretty_print()
-
-# Personalized Feed Example 
-
-messages = [HumanMessage(content="Give me the personalized feed.")]
-messages = agent_feed_builder.invoke({"messages": messages}, config)
-for m in messages['messages']:
-    m.pretty_print()
-messages = [HumanMessage(content="My user id is 123.")]
-messages = agent_feed_builder.invoke({"messages": messages}, config)
-for m in messages['messages']:
-    m.pretty_print()
-messages = [HumanMessage(content="What is my user id?")]
-messages = agent_feed_builder.invoke({"messages": messages}, config)
-for m in messages['messages']:
-    m.pretty_print()
-
+#messages = [HumanMessage(content="Hello World! I'm Matteo.")]
+#messages = agent_feed_builder.invoke({"messages": messages, "summary": None}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#
+## Personalized Feed Example 
+#
+#messages = [HumanMessage(content="Give me the personalized feed.")]
+#messages = agent_feed_builder.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My user id is 123.")]
+#messages = agent_feed_builder.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="What is my user id?")]
+#messages = agent_feed_builder.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
