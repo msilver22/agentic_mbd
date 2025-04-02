@@ -1,26 +1,22 @@
 import requests
 from dotenv import load_dotenv
 import os
+import json
 
 load_dotenv()
 mbd_api_key = os.getenv("MBD_API_KEY")
 
 import requests
 
-url = "https://api.mbd.xyz/v2/farcaster/casts/search/semantic"
-
+url = "https://api.mbd.xyz/v2/farcaster/users/feed/similar"
 payload = {
-    "query": "Trump is a good person?",
-    "return_metadata": True
+    "user_id": "123",
+    "top_k": 3,
 }
 headers = {
     "accept": "application/json",
-    "HTTP-Referer": "https://docs.mbd.xyz/",
-    "X-Title": "mbd_docs",
     "content-type": "application/json",
     "authorization": f"Bearer {mbd_api_key}"
 }
-
 response = requests.post(url, json=payload, headers=headers)
-
-print(response.text)
+print(json.loads(response.text))

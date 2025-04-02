@@ -1,20 +1,16 @@
-
-from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
-from langchain_core.messages import HumanMessage, AIMessage
+from IPython.display import Image
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import List, Optional
 import requests
 import os
-import streamlit as st
 import json
 from langfuse.callback import CallbackHandler
-
-
-st.title("Feed Builder")
+import logging
 
 
 # ---- API keys ---- #
@@ -23,14 +19,13 @@ mbd_api_key = os.getenv("MBD_API_KEY")
 
 # ---- Langfuse cloud ----#
 langfuse_handler = CallbackHandler(
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY2"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY2"),
     host="https://cloud.langfuse.com" 
 )
 
-
 # ---- Utils ---- #
-def extract_casts(api_response: dict) -> str:
+def extract_users(api_response: dict) -> str:
     """
     Extract cast information from the API response and return as Markdown text.
     """
@@ -38,31 +33,29 @@ def extract_casts(api_response: dict) -> str:
         raise ValueError(f"API response failed: {api_response['body']}")
     
     markdown_output = ""
-    casts = api_response["body"]
+    users = api_response["body"]
     
-    for i, cast in enumerate(casts, 1):
-        author = cast["metadata"]["author"]["username"]
-        text = cast["metadata"]["text"]
-        
-        markdown_output += f"### {i}. @{author} says\n> {text}\n\n"
+    for i, user in enumerate(users, 1):
+        user_id = user["user_id"]        
+        markdown_output += f"# {i}. FID {user_id}\n\n"
 
     return markdown_output
 
+
 # ---- Tools ---- #
 
-# Tool 1: Personalized Feed 
-def get_personalized_feed(user_id: str) -> str:
+# Tool 1: Similar users
+def get_similar_user(user_id: str) -> str:
     """
-    Get personalized feed for a user given user_id.
+    Get a list of similar users for a given user_id.
 
     Args:
         user_id: user id
     """
-    url = "https://api.mbd.xyz/v2/farcaster/casts/feed/for-you"
+    url = "https://api.mbd.xyz/v2/farcaster/users/feed/similar"
     payload = {
         "user_id": user_id,
-        "top_k": 3,
-        "feed_id": "feed_352",
+        "top_k": 5,
     }
     headers = {
         "accept": "application/json",
@@ -70,18 +63,21 @@ def get_personalized_feed(user_id: str) -> str:
         "authorization": f"Bearer {mbd_api_key}"
     }
     response = requests.post(url, json=payload, headers=headers)
-    fetched_results = extract_casts(json.loads(response.text))
+    fetched_results = extract_users(json.loads(response.text))
     return fetched_results
 
-# Tool 2: Trending Cast
-def get_trending_cast() -> str:
+# Tool 2: Similar users
+def get_semantic_user(query: str) -> str:
     """
-    Get trending posts.
+    Get a list of similar users for a given query.
+
+    Args:
+        query: user's query
     """
-    url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
+    url = "https://api.mbd.xyz/v2/farcaster/users/search/semantic"
     payload = {
-        "top_k": 3,
-        "feed_id": "feed_405",
+        "query": query,
+        "top_k": 5,
     }
     headers = {
         "accept": "application/json",
@@ -89,27 +85,53 @@ def get_trending_cast() -> str:
         "authorization": f"Bearer {mbd_api_key}"
     }
     response = requests.post(url, json=payload, headers=headers)
-    fetched_results = extract_casts(json.loads(response.text))
+    fetched_results = extract_users(json.loads(response.text))
     return fetched_results
 
-# Tool 3: Popular Cast
-def get_popular_cast() -> str:
+# Tool 3: Suggested users
+def get_suggested_user(user_id: str) -> str:
     """
-    Get popular posts.
+    Get a list of suggested users for a given user_id.
+
+    Args:
+        user_id: user id
     """
-    url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
-    payload = {
-        "top_k": 3,
-        "feed_id": "feed_404",
+    # Step 1: Get the label with highest score for the user
+
+    url1 = "https://api.mbd.xyz/v2/farcaster/users/labels/for-users"
+    payload1 = {
+        "users_list": [user_id],
+        "label_category": "topics"
     }
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
         "authorization": f"Bearer {mbd_api_key}"
     }
-    response = requests.post(url, json=payload, headers=headers)
-    fetched_results = extract_casts(json.loads(response.text))
+    response1 = requests.post(url1, json=payload1, headers=headers)
+    result1 = json.loads(response1.text)
+    labels = result1["body"][0]["ai_labels"]["topics"]
+    opt_label = ""
+    best_score = 0
+    for item in labels:
+        label = item["label"]
+        score = item["score"]
+        if score > best_score:
+            best_score = score
+            opt_label = label
+    
+    # Step 2: Get the top_k users with highest score for the label
+
+    url2 = "https://api.mbd.xyz/v2/farcaster/users/labels/top-users"
+    payload2 = {
+        "label": opt_label,
+        "top_k": 5,
+        "minimum_activity_count": 100
+    }
+    response2 = requests.post(url2, json=payload2, headers=headers)
+    fetched_results = extract_users(json.loads(response2.text))
     return fetched_results
+
 
 
 # ---- Models ---- #
@@ -118,11 +140,11 @@ def get_popular_cast() -> str:
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # Big model with tools
-mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
+mbd_tools = [get_similar_user, get_semantic_user, get_suggested_user]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
-# ---- State ---- #
+# ---- State of the graph ---- #
 
 class FeedState(MessagesState):
     summary : Optional[str] = None
@@ -160,17 +182,17 @@ def summarize_history(state: FeedState):
     return {"summary": summarized_context, "messages": messages}
 
 # System message
-sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed data from the Farcaster network."
-"You can also use the following tools: get_trending_cast, get_popular_cast, get_personalized_feed(user_id)."
-"If they ask for a personalized feed but don’t provide a user_id, first check if it's present in the summary."
-"If it's not present, ask the user for their user_id."
+sys_msg = SystemMessage("You are a helpful assistant for retrieving users from the Farcaster network."
+"If they ask for similar or suggested users but don’t provide a user_id, ask them for it."
 "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
+"You can use the following tools: get_similar_user(user_id), get_semantic_user(query), get_suggested_user(user_id)."
 "If the user asks for its personal information, first check if it's present in the summary."
 "If it's not included, politely inform the user that it cannot be remembered."
+
 )
 
-# Node for feed_builder
-def feed_builder(state: FeedState):
+# Node for social prompter
+def social_prompter(state: FeedState):
     if state["summary"] is not None:
         sys_summary = SystemMessage(
             content=(
@@ -185,87 +207,86 @@ def feed_builder(state: FeedState):
             return {"messages": [llm_with_tools.invoke([sys_msg, sys_summary]+ [state["messages"][-1]])]} 
     else:
         return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
+    
 
 # Node for printing results
-def feed_printer(state: FeedState):
+def social_tips_printer(state: FeedState):
     """
     Print the fetched results.
     """
     results = state["messages"][-1].content
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content="We fetched the following casts:\n\n" + results)]}
+    return {"messages": [AIMessage(content="We fetched the following users:\n\n" + results)]}
     
 
-
-
 # ---- Graph ---- #
-
+# Nodes
 builder = StateGraph(FeedState)
 builder.add_node("summarizer", summarize_history)
-builder.add_node("feed_builder", feed_builder)
-builder.add_node("feed_printer", feed_printer)
+builder.add_node("social_prompter", social_prompter)
+builder.add_node("social_tips_printer", social_tips_printer)
 builder.add_node("tools", ToolNode(tools = mbd_tools))
+# Edges
 builder.add_edge(START, "summarizer")
-builder.add_edge("summarizer", "feed_builder")
+builder.add_edge("summarizer", "social_prompter")
 builder.add_conditional_edges(
-    "feed_builder",
+    "social_prompter",
     # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
     # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
     tools_condition,
 )
-builder.add_edge("tools", "feed_printer")
-builder.add_edge("feed_printer", END)
+builder.add_edge("tools", "social_tips_printer")
+builder.add_edge("social_tips_printer", END)
 
-if "memory" not in st.session_state:
-    st.session_state.memory = MemorySaver()
+# Memory
+memory = MemorySaver()
+# Compile graph
+agent_social_prompter = builder.compile(checkpointer=memory)
+# Visualize graph
+visualize_graph = True
+if visualize_graph:
+    image = Image(agent_social_prompter.get_graph().draw_mermaid_png())  
+    with open("graphs/social_prompter.png", "wb") as f:
+        f.write(image.data)
+# Config for memory
+config = {
+    "configurable": {"thread_id": "3"},
+    "callbacks": [langfuse_handler],
+}
 
-if "agent" not in st.session_state:
-    st.session_state.agent_feed_builder = builder.compile(checkpointer=st.session_state.memory)
 
-if "config" not in st.session_state:
-    st.session_state.config = {
-        "configurable": {"thread_id": "2"},
-        "callbacks": [langfuse_handler],
-    }
+# ---- Examples ---- #
 
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
+# Hello World Example  
+
+#messages = [HumanMessage(content="Hello World! I'm Matteo.")]
+#messages = agent_social_prompter.invoke({"messages": messages, "summary": None}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+
+# Get similar users
+#messages = [HumanMessage(content="Show me similar users.")]
+#messages = agent_social_prompter.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My id is 1234.")]
+#messages = agent_social_prompter.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
 
-# ---- Streamlit UI ---- #
+# Get suggested users
+#messages = [HumanMessage(content="Show me suggested users.")]
+#messages = agent_social_prompter.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My id is 1234.")]
+#messages = agent_social_prompter.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
-# Display past messages
-for msg in st.session_state["messages"]:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
-
-# Handle user input
-if prompt := st.chat_input("Ask anything"):
-    # Display user message in chat
-    with st.chat_message("user"):
-        st.write(prompt)
-
-    # Add user message to session
-    st.session_state["messages"].append({"role": "user", "content": prompt})
-    messages = [HumanMessage(content=prompt)]
-
-    # Invoke the agent with the user input
-    agent = st.session_state.agent_feed_builder
-    config = st.session_state.config
-    if len(st.session_state["messages"]) == 1:
-        response = agent.invoke({"messages": messages, "summary": None}, config)
-    else: 
-        response = agent.invoke({"messages": messages}, config)
-   
-    # Display assistant reply
-    bot_reply = response["messages"][-1].content
-    second_to_last_reply = response["messages"][-2]
-
-    with st.chat_message("assistant"):
-        if second_to_last_reply.type == "tool":
-            st.write(response["messages"][-3].additional_kwargs)
-        st.write(bot_reply)
-
-    # Store assistant reply
-    st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
-
+# Get semantic users
+#messages = [HumanMessage(content="Show me users related to web3 app development.")]
+#messages = agent_social_prompter.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
