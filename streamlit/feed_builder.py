@@ -111,6 +111,29 @@ def get_popular_cast() -> str:
     fetched_results = extract_casts(json.loads(response.text))
     return fetched_results
 
+# Tool 4: Semantic casts
+def get_semantic_cast(query:str) -> str:
+    """
+    Get semantic posts.
+
+    Args:
+        query: query string
+    """
+    url = "https://api.mbd.xyz/v2/farcaster/casts/search/semantic"
+    payload = {
+        "query": query,
+        "top_k": 3,
+        "return_metadata": True,
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {mbd_api_key}"
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    fetched_results = extract_casts(json.loads(response.text))
+    return fetched_results
+
 
 # ---- Models ---- #
 
@@ -118,7 +141,7 @@ def get_popular_cast() -> str:
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # Big model with tools
-mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
+mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast, get_semantic_cast]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
@@ -161,7 +184,7 @@ def summarize_history(state: FeedState):
 
 # System message
 sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed data from the Farcaster network."
-"You can also use the following tools: get_trending_cast, get_popular_cast, get_personalized_feed(user_id)."
+"You can also use the following tools: get_trending_cast, get_popular_cast, get_personalized_feed(user_id), get_semantic_cast(query)."
 "If they ask for a personalized feed but don’t provide a user_id, first check if it's present in the summary."
 "If it's not present, ask the user for their user_id."
 "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
