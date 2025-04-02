@@ -10,6 +10,11 @@ __pycache__/
 # C extensions
 *.so
 
+# pippo scripts
+pippo_mbd.py
+pippo_lang.py
+
+
 # Distribution / packaging
 .Python
 build/
