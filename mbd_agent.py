@@ -31,16 +31,19 @@ def extract_casts(api_response: dict) -> str:
     Extract cast information from the API response and return as Markdown text.
     """
     if api_response['status_code'] != 200:
-        raise ValueError(f"API response failed: {api_response['body']}")
+        return f"API response failed: {api_response['body']}"
     
     markdown_output = ""
     casts = api_response["body"]
+
+    if not casts:
+        return "I'm sorry, we didn't find casts about it."
     
     for i, cast in enumerate(casts, 1):
         author = cast["metadata"]["author"]["username"]
         text = cast["metadata"]["text"]
         
-        markdown_output += f"# {i}. @{author} says:\n> {text}\n\n"
+        markdown_output += f"### {i}. @{author} says:\n> {text}\n\n"
 
     return markdown_output
 
@@ -49,14 +52,18 @@ def extract_users(api_response: dict) -> str:
     Extract cast information from the API response and return as Markdown text.
     """
     if api_response['status_code'] != 200:
-        raise ValueError(f"API response failed: {api_response['body']}")
+        return f"API response failed: {api_response['body']}"
     
     markdown_output = ""
     users = api_response["body"]
+
+    if not users:
+        return "I'm sorry, we didn't find users about it."
+    
     
     for i, user in enumerate(users, 1):
         user_id = user["user_id"]        
-        markdown_output += f"# {i}. FID {user_id}\n\n"
+        markdown_output += f"#### {i}. FID {user_id}\n\n"
 
     return markdown_output
 
@@ -77,7 +84,6 @@ def get_personalized_feed(user_id: str) -> str:
     payload = {
         "user_id": user_id,
         "top_k": 3,
-        "feed_id": "feed_352",
     }
     headers = {
         "accept": "application/json",
@@ -96,7 +102,6 @@ def get_trending_cast() -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
     payload = {
         "top_k": 3,
-        "feed_id": "feed_405",
     }
     headers = {
         "accept": "application/json",
@@ -115,7 +120,6 @@ def get_popular_cast() -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
     payload = {
         "top_k": 3,
-        "feed_id": "feed_404",
     }
     headers = {
         "accept": "application/json",
@@ -137,7 +141,7 @@ def get_semantic_cast(query:str) -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/search/semantic"
     payload = {
         "query": query,
-        "top_k": 5,
+        "top_k": 3,
         "return_metadata": True,
     }
     headers = {
@@ -334,9 +338,9 @@ def planner_condition(state: FeedState) -> Literal["feed_builder", "social_promp
 def small_talks_node(state: FeedState):
     small_talks_sys = ("You are a helpful assistant for small talks."
     "You are a part of an agent that is able to "
-    "- build feed on Farcaster social network (e.g semantic search, personalized feed, trending posts, etc.)"
-    "- social prompting(e.g suggest similar, semantic, or suggested users)."
-    "If the user is just greeting or making small talk, respond accordingly and ask how you can help."
+    "- build feed on Farcaster social network : semantic search, personalized feed, trending posts, etc.)"
+    "- social prompting: suggest similar, semantic users, or suggested users)."
+    "If the user is just greeting or making small talk, respond accordingly and inform on agent's capabilities."
     f"\n\nUser query:\n\n{state['messages'][-2].content}"
     )
     return {"messages": [small_talk_llm.invoke(small_talks_sys)]}
@@ -346,19 +350,18 @@ def small_talks_node(state: FeedState):
 
 feed_sys_msg = SystemMessage("You are a helpful assistant for retrieving MBD feed data from the Farcaster network."
 "You can use the following tools: get_trending_cast, get_popular_cast, get_personalized_feed(user_id), get_semantic_cast(query)."
-"If they ask for a personalized feed but don’t provide a user_id, first check if it's present in the summary."
-"If it's not present, ASK the user for their user_id."
-"If the user is just greeting or making small talk, respond accordingly and ask how you can help."
+"If the user is asking what are your capabilities, or asking for how you can help him, respond explaining your tools."
+"If they ask for a personalized feed but don’t provide a user_id, check if it's present in the summary."
+"The user_id must be a number. If it's not present in the summary,  DO NOT invent it and ASK the user for it."
 "If the user asks for its personal information, first check if it's present in the summary."
-"If it's not included, politely inform the user that it cannot be remembered."
 )
 
 prompting_sys_msg = SystemMessage("You are a helpful assistant for retrieving users from the Farcaster network."
-"If they ask for similar or suggested users but don’t provide a user_id, ask them for it."
-"If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "You can use the following tools: get_similar_user(user_id), get_semantic_user(query), get_suggested_user(user_id)."
+"If the user is asking what are your capabilities, or asking for how you can help him, respond explaining your tools."
+"If they ask for similar or suggested users but don’t provide a user_id, check if it's present in the summary."
+"The user_id must be a number. If it's not present in the summary, DO NOT invent it and ASK the user for it."
 "If the user asks for its personal information, first check if it's present in the summary."
-"If it's not included, politely inform the user that it cannot be remembered."
 )
 
 # Node for feed_builder
