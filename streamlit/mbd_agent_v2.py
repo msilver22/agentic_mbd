@@ -220,16 +220,18 @@ def get_suggested_user(user_id: str) -> str:
     }
     response1 = requests.post(url1, json=payload1, headers=headers)
     result1 = json.loads(response1.text)
-    labels = result1["body"][0]["ai_labels"]["topics"]
-    opt_label = ""
-    best_score = 0
-    for item in labels:
-        label = item["label"]
-        score = item["score"]
-        if score > best_score:
-            best_score = score
-            opt_label = label
-    
+    if result1["body"] != []:
+        labels = result1["body"][0]["ai_labels"]["topics"]
+        opt_label = ""
+        best_score = 0
+        for item in labels:
+            label = item["label"]
+            score = item["score"]
+            if score > best_score:
+                best_score = score
+                opt_label = label
+    else:
+        opt_label = "diaries_daily_life"
     # Step 2: Get the top_k users with highest score for the label
 
     url2 = "https://api.mbd.xyz/v2/farcaster/users/labels/top-users"
@@ -387,6 +389,28 @@ def feed_builder_tools_condition(state: FeedState) -> Literal["feed_tools", "__e
         return "feed_tools"
     else:
         return "__end__"
+    
+def additional_prompting(state: FeedState):
+    """
+    Fetch additional informations based on previous tool calls.
+    """
+    tool_call = state["messages"][-2].tool_calls[0]
+    tool_name = tool_call["name"]
+
+    if tool_name == "get_semantic_cast":
+        query = tool_call["args"]["query"]
+        return {"messages": [AIMessage(content=get_semantic_user(query))]}
+
+    elif tool_name == "get_personalized_feed":
+        user_id = tool_call["args"]["user_id"]
+        return {"messages": [AIMessage(content=get_suggested_user(user_id))]}
+    
+    elif tool_name == "get_popular_cast" or tool_name == "get_trending_cast":
+        return {"messages": [AIMessage(content=get_semantic_user("Farcaster"))]}
+
+    else: 
+        return {"messages": [AIMessage(content="No additional information fetched.")]}
+
 
 # Node for social prompter
 def social_prompter_node(state: FeedState):
@@ -416,25 +440,48 @@ def social_prompter_tools_condition(state: FeedState) -> Literal["prompting_tool
     else:
         return "__end__"
 
+def additional_building(state: FeedState):
+    """
+    Fetch additional informations based on previous tool calls.
+    """
+    tool_call = state["messages"][-2].tool_calls[0]
+    tool_name = tool_call["name"]
+
+    if tool_name == "get_semantic_user":
+        query = tool_call["args"]["query"]
+        return {"messages": [AIMessage(content=get_semantic_cast(query))]}
+
+    elif tool_name == "get_similar_user" or tool_name == "get_suggested_user":
+        user_id = tool_call["args"]["user_id"]
+        return {"messages": [AIMessage(content=get_personalized_feed(user_id))]}
+    
+    else: 
+        return {"messages": [AIMessage(content="No additional information fetched.")]}
+
+
 # Node for printing results of feed builder
 def feed_printer_node(state: FeedState):
     """
     Print the fetched results.
     """
-    results = state["messages"][-1].content
+    casts_results = state["messages"][-2].content
+    users_results = state["messages"][-1].content
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content="We fetched the following casts:\n\n" + results)]}
+    state["messages"][-2].content = "Tool executed successfully."
+    return {"messages": [AIMessage(content=f"We fetched the following casts:\n\n{casts_results}\nIn addition, we suggest the following users:\n\n{users_results}")]}
     
 # Node for printing results of social prompter
 def social_tips_printer_node(state: FeedState):
     """
     Print the fetched results.
     """
-    results = state["messages"][-1].content
+    users_results = state["messages"][-2].content
+    casts_results = state["messages"][-1].content
+    state["messages"][-2].content = "Tool executed successfully."
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content="We fetched the following users:\n\n" + results)]}
-
-
+    return {"messages": [AIMessage(content=f"We fetched the following users:\n\n{users_results}\n"
+                                            f"In addition, we suggest the following casts:\n\n{casts_results}")]}
+    
 # ---- Graph ---- #
 # Nodes
 builder = StateGraph(FeedState)
@@ -447,7 +494,9 @@ builder.add_node("social_tips_printer", social_tips_printer_node)
 builder.add_node("feed_printer", feed_printer_node)
 builder.add_node("feed_tools", ToolNode(tools = feed_tools, name="feed_tools"))
 builder.add_node("prompting_tools", ToolNode(tools = prompting_tools, name="prompting_tools"))
-# Edges
+builder.add_node("additional_prompting", additional_prompting)
+builder.add_node("additional_building", additional_building)
+#Edges
 builder.add_edge(START, "summarizer")
 builder.add_edge("summarizer", "planner")
 builder.add_conditional_edges(
@@ -462,9 +511,11 @@ builder.add_conditional_edges(
     "social_prompter",
     social_prompter_tools_condition,
 )
-builder.add_edge("prompting_tools", "social_tips_printer")
+builder.add_edge("prompting_tools", "additional_building")
+builder.add_edge("additional_building", "social_tips_printer")
 builder.add_edge("social_tips_printer", END)
-builder.add_edge("feed_tools", "feed_printer")
+builder.add_edge("feed_tools", "additional_prompting")
+builder.add_edge("additional_prompting", "feed_printer")
 builder.add_edge("feed_printer", END)
 builder.add_edge("small_talks", END)
 
@@ -510,11 +561,13 @@ if prompt := st.chat_input("Ask anything"):
    
     # Display assistant reply
     bot_reply = response["messages"][-1].content
-    second_to_last_reply = response["messages"][-2]
+    if len(response["messages"]) > 3:
+        third_to_last_reply = response["messages"][-4]
 
     with st.chat_message("assistant"):
-        if second_to_last_reply.type == "tool":
-            st.write(response["messages"][-3].additional_kwargs)
+        if len(response["messages"]) > 3:
+            if third_to_last_reply.type == "ai" and third_to_last_reply.tool_calls != []:
+                st.write(response["messages"][-4].tool_calls)
         st.write(bot_reply)
 
     # Store assistant reply

@@ -1,18 +1,17 @@
-from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
-from langchain_core.messages import HumanMessage, AIMessage
+from IPython.display import Image
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import List, Optional, Literal
 import requests
 import os
-import streamlit as st
 import json
 from langfuse.callback import CallbackHandler
+import logging
 
-st.title("MBD agent: build your feed and social prompting")
 
 # ---- API keys ---- #
 load_dotenv()
@@ -61,11 +60,13 @@ def extract_users(api_response: dict) -> str:
     if not users:
         return "I'm sorry, we didn't find users about it."
     
+    
     for i, user in enumerate(users, 1):
         user_id = user["user_id"]        
         markdown_output += f"#### {i}. FID {user_id}\n\n"
 
     return markdown_output
+
 
 # ---- Tools ---- #
 
@@ -82,7 +83,7 @@ def get_personalized_feed(user_id: str) -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/for-you"
     payload = {
         "user_id": user_id,
-        "top_k": 5,
+        "top_k": 3,
     }
     headers = {
         "accept": "application/json",
@@ -100,7 +101,7 @@ def get_trending_cast() -> str:
     """
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
     payload = {
-        "top_k": 5,
+        "top_k": 3,
     }
     headers = {
         "accept": "application/json",
@@ -118,7 +119,7 @@ def get_popular_cast() -> str:
     """
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
     payload = {
-        "top_k": 5,
+        "top_k": 3,
     }
     headers = {
         "accept": "application/json",
@@ -140,7 +141,7 @@ def get_semantic_cast(query:str) -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/search/semantic"
     payload = {
         "query": query,
-        "top_k": 5,
+        "top_k": 3,
         "return_metadata": True,
     }
     headers = {
@@ -151,6 +152,8 @@ def get_semantic_cast(query:str) -> str:
     response = requests.post(url, json=payload, headers=headers)
     fetched_results = extract_casts(json.loads(response.text))
     return fetched_results
+
+
 
 # ---- Social Prompter tools ---- #
 
@@ -263,6 +266,7 @@ prompting_tools = [get_similar_user, get_semantic_user, get_suggested_user]
 social_prompter_llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0, )
 social_prompter_llm_with_tools = social_prompter_llm.bind_tools(prompting_tools)
 
+
 # ---- State of the graph ---- #
 
 class FeedState(MessagesState):
@@ -302,7 +306,7 @@ def summarize_history(state: FeedState):
 planner_sys_msg = (
     "Choose one node from: FEED, PROMPTING, or OTHER, based on the user's message. "
     "Output ONLY the node label (e.g., FEED). "
-    "FEED: For suggesting feeds, casts or posts.\n"
+    "FEED: For suggesting feeds or casts.\n"
     "PROMPTING: For suggesting users.\n"
     "OTHER: For small talk, unrelated questions, or anything else."
 )
@@ -322,6 +326,7 @@ def planner_condition(state: FeedState) -> Literal["feed_builder", "social_promp
     # Retrieve the decision returned by the planner node
     decision = state["messages"][-1].content.strip().splitlines()[-1].upper()
     state["messages"][-1].content = f"AI chose the node {decision}."
+    
     if decision == "FEED":
         return "feed_builder"
     elif decision == "PROMPTING":
@@ -333,14 +338,13 @@ def planner_condition(state: FeedState) -> Literal["feed_builder", "social_promp
 def small_talks_node(state: FeedState):
     small_talks_sys = ("You are a helpful assistant for small talks."
     "You are a part of an agent that is able to "
-    "- build feed on Farcaster social network : semantic search, personalized feed, trending posts, popular posts.)"
-    "- social prompting: show similar or semantic users, suggest users)."
-    "If the user is just greeting or making small talk, respond informing on agent's capabilities."
-    "If the user ask for personal infroamtions, check if it's present in the summary."
+    "- build feed on Farcaster social network : semantic search, personalized feed, trending posts, etc.)"
+    "- social prompting: suggest similar, semantic users, or suggested users)."
+    "If the user is just greeting or making small talk, respond accordingly and inform on agent's capabilities."
     f"\n\nUser query:\n\n{state['messages'][-2].content}"
-    f"\n\nSummary of the conversation:\n\n{state['summary']}"
     )
     return {"messages": [small_talk_llm.invoke(small_talks_sys)]}
+
 
 # System messages of feed builder and social prompter
 
@@ -388,6 +392,28 @@ def feed_builder_tools_condition(state: FeedState) -> Literal["feed_tools", "__e
     else:
         return "__end__"
 
+def additional_prompting(state: FeedState):
+    """
+    Fetch additional informations based on previous tool calls.
+    """
+    tool_call = state["messages"][-2].tool_calls[0]
+    tool_name = tool_call["name"]
+
+    if tool_name == "get_semantic_cast":
+        query = tool_call["args"]["query"]
+        return {"messages": [AIMessage(content=get_semantic_user(query))]}
+
+    elif tool_name == "get_personalized_feed":
+        user_id = tool_call["args"]["user_id"]
+        return {"messages": [AIMessage(content=get_suggested_user(user_id))]}
+    
+    elif tool_name == "get_popular_cast" or tool_name == "get_trending_cast":
+        return {"messages": [AIMessage(content=get_semantic_user("Farcaster"))]}
+
+    else: 
+        return {"messages": [AIMessage(content="No additional information fetched.")]}
+
+
 # Node for social prompter
 def social_prompter_node(state: FeedState):
     if state["summary"] is not None:
@@ -415,25 +441,49 @@ def social_prompter_tools_condition(state: FeedState) -> Literal["prompting_tool
         return "prompting_tools"
     else:
         return "__end__"
+    
+
+def additional_building(state: FeedState):
+    """
+    Fetch additional informations based on previous tool calls.
+    """
+    tool_call = state["messages"][-2].tool_calls[0]
+    tool_name = tool_call["name"]
+
+    if tool_name == "get_semantic_user":
+        query = tool_call["args"]["query"]
+        return {"messages": [AIMessage(content=get_semantic_cast(query))]}
+
+    elif tool_name == "get_similar_user" or tool_name == "get_suggested_user":
+        user_id = tool_call["args"]["user_id"]
+        return {"messages": [AIMessage(content=get_personalized_feed(user_id))]}
+    
+    else: 
+        return {"messages": [AIMessage(content="No additional information fetched.")]}
 
 # Node for printing results of feed builder
 def feed_printer_node(state: FeedState):
     """
     Print the fetched results.
     """
-    results = state["messages"][-1].content
+    casts_results = state["messages"][-2].content
+    users_results = state["messages"][-1].content
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content="We fetched the following casts:\n\n" + results)]}
+    state["messages"][-2].content = "Tool executed successfully."
+    return {"messages": [AIMessage(content=f"We fetched the following casts:\n\n{casts_results}\nIn addition, we suggest the following users:\n\n{users_results}")]}
     
 # Node for printing results of social prompter
 def social_tips_printer_node(state: FeedState):
     """
     Print the fetched results.
     """
-    results = state["messages"][-1].content
+    users_results = state["messages"][-2].content
+    casts_results = state["messages"][-1].content
+    state["messages"][-2].content = "Tool executed successfully."
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content="We fetched the following users:\n\n" + results)]}
-
+    return {"messages": [AIMessage(content=f"We fetched the following users:\n\n{users_results}\n"
+                                            f"In addition, we suggest the following casts:\n\n{casts_results}")]}
+    
 
 # ---- Graph ---- #
 # Nodes
@@ -447,6 +497,8 @@ builder.add_node("social_tips_printer", social_tips_printer_node)
 builder.add_node("feed_printer", feed_printer_node)
 builder.add_node("feed_tools", ToolNode(tools = feed_tools, name="feed_tools"))
 builder.add_node("prompting_tools", ToolNode(tools = prompting_tools, name="prompting_tools"))
+builder.add_node("additional_prompting", additional_prompting)
+builder.add_node("additional_building", additional_building)
 # Edges
 builder.add_edge(START, "summarizer")
 builder.add_edge("summarizer", "planner")
@@ -462,61 +514,98 @@ builder.add_conditional_edges(
     "social_prompter",
     social_prompter_tools_condition,
 )
-builder.add_edge("prompting_tools", "social_tips_printer")
+builder.add_edge("prompting_tools", "additional_building")
+builder.add_edge("additional_building", "social_tips_printer")
 builder.add_edge("social_tips_printer", END)
-builder.add_edge("feed_tools", "feed_printer")
+builder.add_edge("feed_tools", "additional_prompting")
+builder.add_edge("additional_prompting", "feed_printer")
 builder.add_edge("feed_printer", END)
 builder.add_edge("small_talks", END)
 
-if "memory" not in st.session_state:
-    st.session_state.memory = MemorySaver()
+# Memory
+memory = MemorySaver()
+# Compile graph
+mbd_agent = builder.compile(checkpointer=memory)
+# Visualize graph
+visualize_graph = True
+if visualize_graph:
+    image = Image(mbd_agent.get_graph().draw_mermaid_png())  
+    with open("graphs/mbd_agent_v2.png", "wb") as f:
+        f.write(image.data)
+# Config for memory
+config = {
+    "configurable": {"thread_id": "3"},
+    "callbacks": [langfuse_handler],
+}
 
-if "agent" not in st.session_state:
-    st.session_state.mbd_agent = builder.compile(checkpointer=st.session_state.memory)
 
-if "config" not in st.session_state:
-    st.session_state.config = {
-        "configurable": {"thread_id": "2"},
-        "callbacks": [langfuse_handler],
-    }
+# ---- Examples ---- #
 
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
+# Hello World Example  
+#messages = [HumanMessage(content="Hello World! I'm Matteo.")]
+#messages = mbd_agent.invoke({"messages": messages, "summary": None}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="What can you do for me?")]
+#messages = mbd_agent.invoke({"messages": messages, "summary": None}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
-# ---- Streamlit UI ---- #
+# ---- Social Prompting examples ---- #
 
-# Display past messages
-for msg in st.session_state["messages"]:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+# Get similar users
+#messages = [HumanMessage(content="Show me users similar to me.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My user id is 123.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
-# Handle user input
-if prompt := st.chat_input("Ask anything"):
-    # Display user message in chat
-    with st.chat_message("user"):
-        st.write(prompt)
+# Get suggested users
+#messages = [HumanMessage(content="Show me users suggested for me (user id 123).")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My user id is 123.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
-    # Add user message to session
-    st.session_state["messages"].append({"role": "user", "content": prompt})
-    messages = [HumanMessage(content=prompt)]
+# Get semantic users
+#messages = [HumanMessage(content="Show me users related to web3 app development.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
 
-    # Invoke the agent with the user input
-    agent = st.session_state.mbd_agent
-    config = st.session_state.config
-    if len(st.session_state["messages"]) == 1:
-        response = agent.invoke({"messages": messages, "summary": None}, config)
-    else: 
-        response = agent.invoke({"messages": messages}, config)
-   
-    # Display assistant reply
-    bot_reply = response["messages"][-1].content
-    second_to_last_reply = response["messages"][-2]
 
-    with st.chat_message("assistant"):
-        if second_to_last_reply.type == "tool":
-            st.write(response["messages"][-3].additional_kwargs)
-        st.write(bot_reply)
 
-    # Store assistant reply
-    st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
+# ---- Feed Builder examples ---- #
 
+# Personalized Feed Example 
+#
+#messages = [HumanMessage(content="Give me the personalized feed for user 123.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="My user id is 123.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#messages = [HumanMessage(content="What is my user id?")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+
+# Get trending cast
+#messages = [HumanMessage(content="Show me the trending cast.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+
+
+#messages = [HumanMessage(content="Hi! I'm Matteo.")]
+#messages = mbd_agent.invoke({"messages": messages}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
