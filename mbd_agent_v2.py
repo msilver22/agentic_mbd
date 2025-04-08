@@ -84,6 +84,7 @@ def get_personalized_feed(user_id: str) -> str:
     payload = {
         "user_id": user_id,
         "top_k": 3,
+        "return_metadata": True,
     }
     headers = {
         "accept": "application/json",
@@ -102,6 +103,7 @@ def get_trending_cast() -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/trending"
     payload = {
         "top_k": 3,
+        "return_metadata": True,
     }
     headers = {
         "accept": "application/json",
@@ -120,6 +122,7 @@ def get_popular_cast() -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/feed/popular"
     payload = {
         "top_k": 3,
+        "return_metadata": True,
     }
     headers = {
         "accept": "application/json",
