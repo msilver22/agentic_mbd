@@ -76,7 +76,7 @@ pip install -r requirements.txt
 
 4. **Explore the Agents**
    
-The agents are divided into two main sections:
+The repository is organized as follows:
 - `src/` folder: This folder contains the core implementation of the agents. You can explore the code here to modify or test the underlying models and functionalities.
 
 - `streamlit/` folder: This folder contains the Streamlit-based UI for the agents. Each agent is designed to be easily interactable through the web interface provided by [*Streamlit*](https://streamlit.io/).
