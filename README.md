@@ -67,7 +67,7 @@ cd agentic_mbd
 
 2. **Set Up Docker Environment**
 
-Make sure to run the repository within a Docker container for a consistent environment. 
+Make sure to run the repository within a Docker container. 
 
 3. **Install Python Dependencies**
 ```
