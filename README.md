@@ -61,8 +61,8 @@ The **planner node** helps determine whether to:
 
 1. **Clone the Repository**
 ```
-git clone https://github.com/yourusername/repo_name.git
-cd repo_name
+git clone https://github.com/msilver22/agentic_mbd.git
+cd agentic_mbd
 ```
 
 2. **Set Up Docker Environment**
