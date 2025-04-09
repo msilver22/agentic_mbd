@@ -57,3 +57,43 @@ The **planner node** helps determine whether to:
 - [*Langfuse*](https://cloud.langfuse.com/): Integrated for tracing and observability
 - [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) APIs: For fetching real-time data from Farcaster
 
+# 🚀 Reproducibility and Usage
+
+1. **Clone the Repository**
+```
+git clone https://github.com/yourusername/repo_name.git
+cd repo_name
+```
+
+2. **Set Up Docker Environment**
+
+Make sure to run the repository within a Docker container for a consistent environment. 
+
+3. **Install Python Dependencies**
+```
+pip install -r requirements.txt
+```
+
+4. **Explore the Agents**
+   
+The agents are divided into two main sections:
+- `src/` folder: This folder contains the core implementation of the agents. You can explore the code here to modify or test the underlying models and functionalities.
+
+- `streamlit/` folder: This folder contains the Streamlit-based UI for the agents. Each agent is designed to be easily interactable through the web interface provided by [*Streamlit*](https://streamlit.io/).
+
+5. **Running the Agents with Streamlit UI**
+   
+To run any of the agents with the Streamlit UI, navigate to the streamlit directory.
+```
+cd streamlit
+```
+Run the desired agent using Streamlit.
+
+```
+streamlit run agent_name.py
+```
+Replace agent_name.py with the appropriate script name for the agent you want to run (e.g., `feed_builder.py`, `social_prompter.py`, `mbd_agent.py`).
+
+The agent will open in your web browser, where you can interact with it via the UI.
+
+
