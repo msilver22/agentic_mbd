@@ -570,7 +570,9 @@ if prompt := st.chat_input("Ask anything"):
     with st.chat_message("assistant"):
         if len(response["messages"]) > 3:
             if third_to_last_reply.type == "ai" and third_to_last_reply.tool_calls != []:
-                st.write(response["messages"][-4].tool_calls)
+                tool_call = response["messages"][-4].tool_calls
+                st.write(tool_call)
+                st.session_state["messages"].append({"role": "assistant", "content": tool_call})
         st.write(bot_reply)
 
     # Store assistant reply
