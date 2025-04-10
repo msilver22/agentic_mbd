@@ -73,15 +73,21 @@ Make sure to run the repository within a Docker container.
 ```
 pip install -r requirements.txt
 ```
+4. **Set up the API keys**
 
-4. **Explore the Agents**
+Make sure to set the API keys into `.env`file. It's needed:
+- [*Groq*](https://console.groq.com/dashboard/limits) API key
+- [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) API key
+- [*Langfuse*](https://cloud.langfuse.com/) public/private key (optional for tracking)
+   
+5. **Explore the Agents**
    
 The repository is organized as follows:
 - `src/` : This folder contains the core implementation of the agents. You can explore the code here to modify or test the underlying models and functionalities.
 
 - `streamlit/` : This folder contains the Streamlit-based UI for the agents. Each agent is designed to be easily interactable through the web interface provided by [*Streamlit*](https://streamlit.io/).
 
-5. **Running the Agents with Streamlit UI**
+6. **Running the Agents with Streamlit UI**
    
 To run any of the agents with the Streamlit UI, navigate to the streamlit directory.
 ```
