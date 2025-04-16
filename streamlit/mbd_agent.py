@@ -251,7 +251,7 @@ def get_suggested_user(user_id: str) -> str:
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # Planner model
-planner_llm = ChatGroq(model="deepseek-r1-distill-qwen-32b", temperature=0)
+planner_llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 
 # Small talks model
 small_talk_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)

@@ -11,6 +11,7 @@ import os
 import streamlit as st
 import json
 from langfuse.callback import CallbackHandler
+import time
 
 st.title("MBD agent: build your feed and social prompting")
 
@@ -44,7 +45,7 @@ def extract_casts(api_response: dict) -> str:
         author = cast["metadata"]["author"]["username"]
         text = cast["metadata"]["text"]
         
-        markdown_output += f"### {i}. @{author} says:\n> {text}\n\n"
+        markdown_output += f"##### {i}. @{author} says:\n> {text}\n\n"
 
     return markdown_output
 
@@ -63,7 +64,7 @@ def extract_users(api_response: dict) -> str:
     
     for i, user in enumerate(users, 1):
         user_id = user["user_id"]        
-        markdown_output += f"#### {i}. FID {user_id}\n\n"
+        markdown_output += f"##### {i}. FID {user_id}\n\n"
 
     return markdown_output
 
@@ -253,7 +254,7 @@ def get_suggested_user(user_id: str) -> str:
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
 # Planner model
-planner_llm = ChatGroq(model="deepseek-r1-distill-qwen-32b", temperature=0)
+planner_llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 
 # Small talks model
 small_talk_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
@@ -281,7 +282,7 @@ def summarize_history(state: FeedState):
     # Check if the last message is a feed illustration
     # If so, change it from the messages list so that the input tokens are optimized
     if len(messages) > 1:
-        if messages[-2].content.startswith("We fetched"):
+        if messages[-2].content.startswith("### We fetched"):
             state["messages"][-2].content = "AI showed fetched results."
     history_text = ""
     if len(messages) == 1:
@@ -306,10 +307,10 @@ def summarize_history(state: FeedState):
 
 planner_sys_msg = (
     "Choose one node from: FEED, PROMPTING, or OTHER, based on the user's message. "
-    "Output ONLY the node label (e.g., FEED). "
     "FEED: For suggesting feeds, casts or posts.\n"
     "PROMPTING: For suggesting users.\n"
     "OTHER: For small talk, unrelated questions, or anything else."
+    "\n Output ONLY the node label (e.g., 'FEED')."
 )
 
 def planner_node(state: FeedState):
@@ -471,7 +472,7 @@ def feed_printer_node(state: FeedState):
     users_results = state["messages"][-1].content
     state["messages"][-1].content = "Tool executed successfully."
     state["messages"][-2].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content=f"We fetched the following casts:\n\n{casts_results}\nIn addition, we suggest the following users:\n\n{users_results}")]}
+    return {"messages": [AIMessage(content=f"### We fetched the following casts:\n\n{casts_results}\n ### In addition, we suggest the following users:\n\n{users_results}")]}
     
 # Node for printing results of social prompter
 def social_tips_printer_node(state: FeedState):
@@ -482,8 +483,8 @@ def social_tips_printer_node(state: FeedState):
     casts_results = state["messages"][-1].content
     state["messages"][-2].content = "Tool executed successfully."
     state["messages"][-1].content = "Tool executed successfully."
-    return {"messages": [AIMessage(content=f"We fetched the following users:\n\n{users_results}\n"
-                                            f"In addition, we suggest the following casts:\n\n{casts_results}")]}
+    return {"messages": [AIMessage(content=f"### We fetched the following users:\n\n{users_results}\n"
+                                            f"### In addition, we suggest the following casts:\n\n{casts_results}")]}
     
 # ---- Graph ---- #
 # Nodes
@@ -571,9 +572,17 @@ if prompt := st.chat_input("Ask anything"):
         if len(response["messages"]) > 3:
             if third_to_last_reply.type == "ai" and third_to_last_reply.tool_calls != []:
                 tool_call = response["messages"][-4].tool_calls
+                st.markdown("### Function call")
                 st.write(tool_call)
                 st.session_state["messages"].append({"role": "assistant", "content": tool_call})
-        st.write(bot_reply)
+        # Simulate typing effect
+        placeholder = st.empty()
+        full_response = ""
+        for char in bot_reply:
+            full_response += char
+            placeholder.markdown(full_response + "▌")
+            time.sleep(0.01)  # adjust typing speed here
+        placeholder.markdown(full_response)  # final render without cursor
 
     # Store assistant reply
     st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
