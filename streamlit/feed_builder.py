@@ -11,7 +11,7 @@ import requests
 import os
 import streamlit as st
 import json
-from langfuse.callback import CallbackHandler
+from langfuse.langchain import CallbackHandler
 
 
 st.title("Feed Builder")

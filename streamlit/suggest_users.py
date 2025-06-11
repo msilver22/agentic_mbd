@@ -1,16 +1,19 @@
+from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
 from langgraph.prebuilt import tools_condition, ToolNode
-from IPython.display import Image
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 from typing import List, Optional
 import requests
 import os
+import streamlit as st
 import json
-from langfuse.callback import CallbackHandler
-import logging
+from langfuse.langchain import CallbackHandler
+
+
+st.title("Social Prompter")
 
 
 # ---- API keys ---- #
@@ -23,6 +26,7 @@ langfuse_handler = CallbackHandler(
     secret_key=os.getenv("LANGFUSE_SECRET_KEY2"),
     host="https://cloud.langfuse.com" 
 )
+
 
 # ---- Utils ---- #
 def extract_users(api_response: dict) -> str:
@@ -37,10 +41,9 @@ def extract_users(api_response: dict) -> str:
     
     for i, user in enumerate(users, 1):
         user_id = user["user_id"]        
-        markdown_output += f"# {i}. FID {user_id}\n\n"
+        markdown_output += f"### {i}. FID {user_id}\n\n"
 
     return markdown_output
-
 
 # ---- Tools ---- #
 
@@ -133,7 +136,6 @@ def get_suggested_user(user_id: str) -> str:
     return fetched_results
 
 
-
 # ---- Models ---- #
 
 # Small model for summarization
@@ -144,7 +146,7 @@ mbd_tools = [get_similar_user, get_semantic_user, get_suggested_user]
 llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
-# ---- State of the graph ---- #
+# ---- State ---- #
 
 class FeedState(MessagesState):
     summary : Optional[str] = None
@@ -183,15 +185,16 @@ def summarize_history(state: FeedState):
 
 # System message
 sys_msg = SystemMessage("You are a helpful assistant for retrieving users from the Farcaster network."
-"If they ask for similar or suggested users but don’t provide a user_id, ask them for it."
-"If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "You can use the following tools: get_similar_user(user_id), get_semantic_user(query), get_suggested_user(user_id)."
+"If they ask for similar or suggested users but don’t provide a user_id, first check if it's present in the summary."
+"If it's not present, ask the user for their user_id."
+"If the user is just greeting or making small talk, respond accordingly and ask how you can help."
 "If the user asks for its personal information, first check if it's present in the summary."
 "If it's not included, politely inform the user that it cannot be remembered."
 
 )
 
-# Node for social prompter
+## Node for social prompter
 def social_prompter(state: FeedState):
     if state["summary"] is not None:
         sys_summary = SystemMessage(
@@ -219,7 +222,9 @@ def social_tips_printer(state: FeedState):
     return {"messages": [AIMessage(content="We fetched the following users:\n\n" + results)]}
     
 
+
 # ---- Graph ---- #
+
 # Nodes
 builder = StateGraph(FeedState)
 builder.add_node("summarizer", summarize_history)
@@ -242,51 +247,57 @@ builder.add_edge("social_tips_printer", END)
 memory = MemorySaver()
 # Compile graph
 agent_social_prompter = builder.compile(checkpointer=memory)
-# Visualize graph
-visualize_graph = True
-if visualize_graph:
-    image = Image(agent_social_prompter.get_graph().draw_mermaid_png())  
-    with open("graphs/social_prompter.png", "wb") as f:
-        f.write(image.data)
-# Config for memory
-config = {
-    "configurable": {"thread_id": "3"},
-    "callbacks": [langfuse_handler],
-}
+
+if "memory" not in st.session_state:
+    st.session_state.memory = MemorySaver()
+
+if "agent" not in st.session_state:
+    st.session_state.agent_social_prompter = builder.compile(checkpointer=st.session_state.memory)
+
+if "config" not in st.session_state:
+    st.session_state.config = {
+        "configurable": {"thread_id": "3"},
+        "callbacks": [langfuse_handler],
+    }
+
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
 
 
-# ---- Examples ---- #
+# ---- Streamlit UI ---- #
 
-# Hello World Example  
+# Display past messages
+for msg in st.session_state["messages"]:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
 
-#messages = [HumanMessage(content="Hello World! I'm Matteo.")]
-#messages = agent_social_prompter.invoke({"messages": messages, "summary": None}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
+# Handle user input
+if prompt := st.chat_input("Ask anything"):
+    # Display user message in chat
+    with st.chat_message("user"):
+        st.write(prompt)
 
-# Get similar users
-#messages = [HumanMessage(content="Show me similar users.")]
-#messages = agent_social_prompter.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
-#messages = [HumanMessage(content="My id is 1234.")]
-#messages = agent_social_prompter.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
+    # Add user message to session
+    st.session_state["messages"].append({"role": "user", "content": prompt})
+    messages = [HumanMessage(content=prompt)]
 
+    # Invoke the agent with the user input
+    agent = st.session_state.agent_social_prompter
+    config = st.session_state.config
+    if len(st.session_state["messages"]) == 1:
+        response = agent.invoke({"messages": messages, "summary": None}, config)
+    else: 
+        response = agent.invoke({"messages": messages}, config)
+   
+    # Display assistant reply
+    bot_reply = response["messages"][-1].content
+    second_to_last_reply = response["messages"][-2]
 
-# Get suggested users
-#messages = [HumanMessage(content="Show me suggested users.")]
-#messages = agent_social_prompter.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
-#messages = [HumanMessage(content="My id is 1234.")]
-#messages = agent_social_prompter.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
+    with st.chat_message("assistant"):
+        if second_to_last_reply.type == "tool":
+            st.write(response["messages"][-3].additional_kwargs)
+        st.write(bot_reply)
 
-# Get semantic users
-#messages = [HumanMessage(content="Show me users related to web3 app development.")]
-#messages = agent_social_prompter.invoke({"messages": messages}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
+    # Store assistant reply
+    st.session_state["messages"].append({"role": "assistant", "content": bot_reply})
+

@@ -9,7 +9,7 @@ from typing import List, Optional, Literal
 import requests
 import os
 import json
-from langfuse.callback import CallbackHandler
+from langfuse.langchain import CallbackHandler
 import logging
 
 

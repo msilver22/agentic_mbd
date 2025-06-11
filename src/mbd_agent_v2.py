@@ -9,7 +9,7 @@ from typing import List, Optional, Literal
 import requests
 import os
 import json
-from langfuse.callback import CallbackHandler
+from langfuse.langchain import CallbackHandler
 import logging
 
 
@@ -19,8 +19,8 @@ mbd_api_key = os.getenv("MBD_API_KEY")
 
 # ---- Langfuse cloud ----#
 langfuse_handler = CallbackHandler(
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY3"),
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY3"),
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
     host="https://cloud.langfuse.com" 
 )
 

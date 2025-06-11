@@ -10,7 +10,7 @@ import requests
 import os
 import streamlit as st
 import json
-from langfuse.callback import CallbackHandler
+from langfuse.langchain import CallbackHandler
 
 st.title("MBD agent: build your feed and social prompting")
 
@@ -19,11 +19,7 @@ load_dotenv()
 mbd_api_key = os.getenv("MBD_API_KEY")
 
 # ---- Langfuse cloud ----#
-langfuse_handler = CallbackHandler(
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY3"),
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY3"),
-    host="https://cloud.langfuse.com" 
-)
+langfuse_handler = CallbackHandler()
 
 # ---- Utils ---- #
 
