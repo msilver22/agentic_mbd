@@ -13,6 +13,8 @@ __pycache__/
 # pippo scripts
 pippo_mbd.py
 pippo_lang.py
+pippo_streamlit.py
+pippo_neynar.py
 
 
 # Distribution / packaging
