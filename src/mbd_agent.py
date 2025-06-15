@@ -43,7 +43,7 @@ def extract_casts(api_response: dict) -> str:
         author = cast["metadata"]["author"]["username"]
         text = cast["metadata"]["text"]
         
-        markdown_output += f"### {i}. @{author} says:\n> {text}\n\n"
+        markdown_output += f"{i}. @{author} says:\n> {text}\n\n"
 
     return markdown_output
 
