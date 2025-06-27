@@ -87,6 +87,22 @@ def get_user_casts(user_id: str) -> List[str]:
     
     return formatted_casts
 
+def get_users(api_response: dict) -> str:
+    """
+    Extract user information from the API response and return as Markdown text.
+    """
+    if api_response['status_code'] != 200:
+        raise ValueError(f"API response failed: {api_response['body']}")
+    
+    markdown_output = ""
+    users = api_response["body"]
+    
+    for i, user in enumerate(users, 1):
+        user_id = user["user_id"]        
+        markdown_output += f"{i}. FID {user_id}\n\n"
+
+    return markdown_output
+
 def get_semantic_casts(query:str) -> str:
     """
     Get semantic posts.
@@ -97,7 +113,7 @@ def get_semantic_casts(query:str) -> str:
     url = "https://api.mbd.xyz/v2/farcaster/casts/search/semantic"
     payload = {
         "query": query,
-        "top_k": 2,
+        "top_k": 3,
         "return_metadata": True,
     }
     headers = {
@@ -109,6 +125,26 @@ def get_semantic_casts(query:str) -> str:
     fetched_results = extract_embed_casts(json.loads(response.text))
     return fetched_results
 
+def get_semantic_user(query: str) -> str:
+    """
+    Get a list of similar users for a given query.
+
+    Args:
+        query: user's query
+    """
+    url = "https://api.mbd.xyz/v2/farcaster/users/search/semantic"
+    payload = {
+        "query": query,
+        "top_k": 3,
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {mbd_api_key}"
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    fetched_results = get_users(json.loads(response.text))
+    return fetched_results
 
 
 # ---- State of the graph ---- #
@@ -116,14 +152,15 @@ class PrompterState(MessagesState):
     fid : int
     goal: str
     casts: List[str]
+    all_keywords: json
     keywords: List[str]
 
 
 
 # ---- LLMs ---- #
-extrapolator_LLM = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.05)
-ranker_LLM = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.05)
-writing_tips_LLM = ChatGroq(model="qwen/qwen3-32b", temperature=0.05)
+extrapolator_LLM = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.2)
+ranker_LLM = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.2)
+writing_tips_LLM = ChatGroq(model="qwen/qwen3-32b", temperature=0.2)
 
 
 
@@ -137,70 +174,99 @@ def cast_fetcher(state: PrompterState) -> PrompterState:
 
 def topic_extrapolator(state: PrompterState) -> PrompterState:
     """
-    Extract keywords from each cast using the LLM.
+    Extract keywords from each cast using the LLM and organize them into macro-categories
+    with related micro-topics in a JSON format.
     The LLM will analyze both the target post and related post (if present)
-    to generate 1-2 relevant keywords.
+    to generate relevant keywords.
     """
-    keywords = []
+    extracted_topics_by_category = {} # Initialize an empty dictionary to store topics by category
     
     for cast in state["casts"]:
-        extrapolator_prompt = f"""Analyze the following social media post and extract UP TO 3 key topics or themes.
-            Focus on topics that:
-                - Are specific and meaningful
-                - Are hashtags marked with "/" 
-                - Could spark interesting discussions
-                - Have potential for follow-up questions
-            Return ONLY the keywords, separated by commas, nothing else.
-            Important: If you find hashtags marked with "/", return them WITHOUT the "/" symbol.
-            For example, if you find "/AI", return "AI".
-            
-            Post content:
-            {cast}"""
+        extrapolator_prompt = f"""You are an advanced AI assistant specialized in analyzing social media posts to identify user interests for personalized recommendations. 
+        Your goal is to infer concrete, actionable interests from the user's post content and categorize them.
+
+        Instructions:
+        - Read the following social media post carefully.
+        - Identify the main interest categories (e.g., "Food", "Travel", "Technology").
+        - For each main category, identify 1-3 highly specific sub-interests or topics (e.g., "Italian Cuisine", "Hiking in Dolomites", "AI Development").
+        - Focus on themes that are:
+            - Highly specific and niche, not generic.
+            - Indicative of a genuine user interest that could lead to specific recommendations.
+            - Actionable for calling recommendation APIs.
+        - Return the output in a JSON format where keys are the main categories and values are lists of specific sub-interests.
+        - Return ONLY the JSON object, nothing else.
+
+        Example:
+        Post content: "I love trying new pasta recipes, especially Roman ones like carbonara! Also planning a trip to Tuscany next summer, maybe rent a villa."
+        Output: {{"Food": ["Roman Cuisine", "Pasta Recipes"], "Travel": ["Tuscany Travel", "Villa Rentals"]}}
+
+        Post content:
+        {cast}"""
 
         response = extrapolator_LLM.invoke(extrapolator_prompt)
         
-        # Extract keywords from response, clean them and convert to lowercase
-        extracted_keywords = [k.strip().lower() for k in response.content.split(',')]
-        keywords.extend(extracted_keywords)
+        try:
+            # Parse the JSON output from the LLM
+            llm_output = json.loads(response.content)
+            for category, topics in llm_output.items():
+                if category not in extracted_topics_by_category:
+                    extracted_topics_by_category[category] = []
+                extracted_topics_by_category[category].extend([t.strip().lower() for t in topics])
+        except json.JSONDecodeError:
+            print(f"Warning: LLM did not return valid JSON for cast: {cast}")
+            print(f"LLM response: {response.content}")
+            # Handle cases where LLM might not return perfect JSON
+            # You might want to log this or try a regex fallback if needed
+            pass
     
-    state["keywords"] = keywords
+    state["all_keywords"] = extracted_topics_by_category
     return state
 
 def topic_compressor(state: PrompterState) -> PrompterState:
     """
     Compress the list of keywords into a maximum of 5 topics that represent the core themes.
+    This function now expects state["keywords"] to be a dictionary with categories and lists of micro-topics.
     """
-    if not state["keywords"]:
+    if not state["all_keywords"]:
         return state
-
-    # Format keywords in triplets
-    keywords_text = "[KEYWORDS]\n"
-    for i in range(0, len(state["keywords"]), 3):
-        triplet = state["keywords"][i:i+3]
-        keywords_text += f"{', '.join(triplet)}\n"
     
-    compressor_prompt = f"""You are a conversation topic selector. Your task is to analyze a list of keywords and select up to 5 topics that would be most interesting and engaging for a conversation.
-        Focus on topics that:
-            - Are more frequent than other keywords
-            - Could spark interesting discussions
-            - Have potential for follow-up questions
-        
-        Important: The keywords come in triplets (3 keywords per post). Consider this structure when selecting topics.
-        You can:
-            - Select the most interesting keyword from a triplet
-            - Combine related keywords of the same triplet (e.g. if the triplet is ["AI", "technology", "innovation"], the topic could be "AI and technology")
-            - Select completely new topics that emerge from the analysis
-        
-        Return only the selected topics as a comma-separated list, nothing else.\n\n    
-        {keywords_text}"""
+    compressor_prompt = f"""You are an expert conversation topic curator for a social network. 
+        Your task is to analyze a structured list of user interests, grouped by main categories, and identify the UP TO 5 most engaging, overarching discussion topics. 
+        These topics should be high-level yet clearly derived from the provided specific interests, suitable for sparking a conversation or providing recommendations.
+        Strive to represent the breadth of the user's interests by considering topics from different main categories if possible.
+
+        Instructions:
+        - Review the provided JSON object where keys are main interest categories and values are lists of specific sub-interests.
+        - Identify the 3 to 5 most significant and distinct themes that represent the core interests.
+        - Prioritize topics that:
+            - Are frequently mentioned or strongly implied across the input interests.
+            - Have a clear potential for stimulating conversation or serving as a basis for personalized recommendations.
+            - Represent a genuine, strong interest of the user.
+            - Ideally, cover interests from different high-level categories if they are prominent.
+            
+        Return ONLY the selected topics as a comma-separated list, nothing else. 
+
+        Example Input (JSON interests):
+        {{
+        "Food": ["Roman Cuisine", "Pasta Recipes", "Italian Coffee Making"],
+        "Travel": ["Tuscany Travel", "Villa Rentals", "Florence Museums"],
+        "Outdoors": ["Hiking Dolomites", "Skiing Alps"],
+        "History": ["Ancient History Rome"]
+        }}
+
+        Example Output:
+        Italian Culinary Experiences, Italian Travel & Culture, Mountain Sports, Roman History
+
+        User interests to analyze:
+        {json.dumps(state["all_keywords"], indent=2)}
+        """
 
     response = ranker_LLM.invoke(compressor_prompt)
     
     # Extract and clean the macro-keywords
-    macro_keywords = [k.strip() for k in response.content.split(',')]
-    
-    # Update state with macro-keywords
-    state["keywords"] = macro_keywords
+    keywords = [k.strip() for k in response.content.split(',')]
+    # Update state with macro-keywords (now a simple list)
+    state["keywords"] = keywords
     return state
 
 def prompter_router(state: PrompterState) -> PrompterState:
@@ -215,30 +281,135 @@ def writing_tips_handler(state: PrompterState) -> PrompterState:
     """
     Handle writing-related content.
     """
-    print("Writing handler")
+    if not state["keywords"] and not state["all_keywords"]:
+        return state
+    # Generate writing tips based on the keywords
+    writing_tips_prompt = f"""You are an expert social media content strategist. 
+    Your task is to generate engaging questions that will serve as prompts for the user to create new social media posts.
+
+    Use an introductory sentence, like 'To stimulate your writing for new posts, I've prepared some questions based on your interests.'
+
+    The user has expressed interest in the following core topics:
+    {', '.join(state["keywords"])}.
+    For EACH of these topics, create ONE thought-provoking question that can directly inspire a social media post. 
+    These questions should encourage the user to share their insights or experiences related to the keyword.
+    For additional context on the user's broader interests related to the core topics, here is all the detailed information:
+    {json.dumps(state["all_keywords"], indent=2)}
+    Do not mix topics in a single question; each question should focus on one topic.
+
+    Please present the questions as a bulleted list following the introductory sentence.
+    Do not include any other explanations or concluding remarks.
+
+    ---
+    **Example 1:**
+    **User Keywords:** storytelling, character development
+    **All User Interests:**
+    {{
+    "Writing": {{
+        "Storytelling": ["plot twists", "narrative arcs"],
+        "Character Development": ["protagonists", "antagonists", "character arcs"]
+    }},
+    "Genres": {{
+        "Fantasy": ["world-building", "magic systems"],
+        "Mystery": ["red herrings", "suspense"]
+    }}
+    }}
+
+    **Desired Output:**
+    - What's one surprising plot twist you've loved in a story, and how did it impact your connection to the characters?
+    - How do you approach creating a villain whose motivations are as compelling as your hero's?
+
+    ---
+    **Example 2:**
+    **User Keywords:** digital marketing, SEO, content creation
+    **All User Interests:**
+    {{
+    "Business": {{
+        "Digital Marketing": ["social media strategy", "email campaigns"],
+        "SEO": ["keyword research", "on-page SEO"],
+        "Content Creation": ["blogging", "video marketing"]
+    }},
+    "Tech": {{
+        "Analytics": ["Google Analytics", "data interpretation"]
+    }}
+    }}
+
+    **Desired Output:**
+    - What's the most unexpected challenge you've faced trying to keep up with SEO trends, and how did you adapt your content strategy?
+    - If you had to pick just one social media platform for your niche, which would it be and why is it crucial for your digital marketing goals?
+    - How do you balance creating engaging video content with the need for strong SEO visibility?
+
+    ---
+    """
+
+    response = writing_tips_LLM.invoke(writing_tips_prompt)
+
+    # Extract the questions from the response, only the part after the last <think> tag, if present
+    content = response.content
+    # Find the index of the last occurrence of '</think>'
+    last_think_end_index = content.rfind('</think>')
+
+    if last_think_end_index == -1:
+        # If no </think> tag is found, return the entire text (or handle as error)
+        # In a perfect world, the LLM should always follow the format.
+        # For now, we'll assume the whole text should be processed.
+        content_after_think = content
+    else:
+        # Get all content after the last </think> tag
+        content_after_think = content[last_think_end_index + len('</think>'):]
+
+    # Split the content into lines and filter for bullet points
+    lines = content_after_think.strip().split('\n')
+    writing_tips = []
+    for line in lines:
+        cleaned_line = line.strip()
+        # Check if the line starts with a bullet point (common types: '-', '*')
+        # and is not just an empty line or whitespace after stripping.
+        if cleaned_line.startswith('- ') or cleaned_line.startswith('* '):
+            writing_tips.append(cleaned_line)
+        # Also handle cases where a bullet might be followed immediately by text without a space
+        elif cleaned_line.startswith('-') or cleaned_line.startswith('*'):
+            # Add a space after the bullet if it's missing (for consistent formatting)
+            writing_tips.append(cleaned_line[0] + ' ' + cleaned_line[1:].strip())
+
+    tips = "\n\n".join(writing_tips)
+    print(f"\nGenerated writing tips:\n\n{tips}")
+
     return state
 
 def casts_handler(state: PrompterState) -> PrompterState:
     """
     Handle casts-related content.
     """
+    # For each keyword in state["keywords"], call get_semantic_casts and concatenate the results in markdown
+    markdown_results = "\n"
+    for keyword in state["keywords"]:
+        result = get_semantic_casts(keyword)
+        markdown_results += f"### Cast for: **{keyword}**\n{result}\n"
+    print(markdown_results)
     return state
 
 def users_handler(state: PrompterState) -> PrompterState:
     """
     Handle users-related content.
     """
+    # For each keyword in state["keywords"], call get_semantic_user and concatenate the results in markdown
+    markdown_results = "\n"
+    for keyword in state["keywords"]:
+        result = get_semantic_user(keyword)
+        markdown_results += f"### Users for: **{keyword}**\n{result}\n"
+    print(markdown_results)
     return state
 
 # ---- Graph ---- #
 builder = StateGraph(PrompterState)
-builder.add_node("fetcher", cast_fetcher)
-builder.add_node("extrapolator", topic_extrapolator)
-builder.add_node("compressor", topic_compressor)
-builder.add_node("prompter_router", prompter_router)
-builder.add_node("writing_tips", writing_tips_handler)
-builder.add_node("casts_embed", casts_handler)
-builder.add_node("users_embed", users_handler)
+builder.add_node('fetcher', cast_fetcher)
+builder.add_node('extrapolator', topic_extrapolator)
+builder.add_node('compressor', topic_compressor)
+builder.add_node('prompter_router', prompter_router)
+builder.add_node('writing_tips', writing_tips_handler)
+builder.add_node('casts_embed', casts_handler)
+builder.add_node('users_embed', users_handler)
 
 # Add edges
 builder.add_edge(START, "fetcher")
@@ -275,6 +446,6 @@ config = {
     "callbacks": [langfuse_handler],
 }
 
-messages = agent_social_prompter.invoke({"fid": 4461, "goal": "writing", "casts": [], "keywords": [], "messages": []}, config)
+messages = agent_social_prompter.invoke({"fid": 4461, "goal": "writing", "casts": [], "all_keywords":{}, "keywords": [], "messages": []}, config)
 for m in messages['messages']:
     m.pretty_print()
