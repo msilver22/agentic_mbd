@@ -25,7 +25,7 @@ It can use several tools, including:
 ### ✏️ Graph Designs
 
 ![Architecture](graphs/feed_builder.png)
-![Architecture](graphs/social_prompter.png)
+![Architecture](graphs/suggest_users.png)
 
 
 
