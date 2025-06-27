@@ -112,11 +112,11 @@ def get_popular_cast() -> str:
 # ---- Models ---- #
 
 # Small model for summarization
-summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
+summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.2)
 
 # Big model with tools
 mbd_tools = [get_personalized_feed, get_trending_cast, get_popular_cast]
-llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0)
+llm = ChatGroq(model="deepseek-r1-distill-llama-70b", temperature=0.2)
 llm_with_tools = llm.bind_tools(mbd_tools)
 
 
