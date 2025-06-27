@@ -1,24 +1,48 @@
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
-from langgraph.prebuilt import tools_condition, ToolNode
-from IPython.display import Image
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
-from typing import List, Optional
-from typing_extensions import TypedDict
+from typing import List
 import requests
 import os
 import json
 from langfuse.langchain import CallbackHandler
-import logging
 import re
+import streamlit as st
+
+st.set_page_config(
+    page_title="Social Prompting App",
+)
+
+st.title("Social prompting on Farcaster")
+st.subheader("Choose an option below:")
+
+st.markdown(
+    """
+    <style>
+    .stButton>button {
+        background-color: #7C65C1;
+        color: white;
+        padding: 10px 24px;
+        text-align: center;
+        text-decoration: none;
+        display: inline-block;
+        font-size: 16px;
+        margin: 4px 2px;
+        cursor: pointer;
+        border-radius: 8px;
+        border: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # ---- API keys ---- #
 load_dotenv()
 mbd_api_key = os.getenv("MBD_API_KEY")
 
 # ---- Langfuse cloud ----#
+@st.cache_resource
 def get_langfuse_handler():
     return CallbackHandler()
 
@@ -169,6 +193,7 @@ class PrompterState(MessagesState):
     casts: List[str]
     all_keywords: json
     keywords: List[str]
+    results: str
 
 
 
@@ -386,7 +411,9 @@ def writing_tips_handler(state: PrompterState) -> PrompterState:
             writing_tips.append(cleaned_line[0] + ' ' + cleaned_line[1:].strip())
 
     tips = "\n\n".join(writing_tips)
-    print(f"\nGenerated writing tips:\n\n{tips}")
+    if not tips:
+        tips = "No writing tips generated. Please try again with different keywords."
+    state["results"] = tips
 
     return state
 
@@ -399,7 +426,11 @@ def casts_handler(state: PrompterState) -> PrompterState:
     for keyword in state["keywords"]:
         result = get_semantic_casts(keyword)
         markdown_results += f"### Cast for: **{keyword}**\n{result}\n"
-    print(markdown_results)
+    
+    if not markdown_results.strip():
+        markdown_results = "I'm sorry, we didn't find casts about it."
+    state["results"] = markdown_results
+
     return state
 
 def users_handler(state: PrompterState) -> PrompterState:
@@ -411,7 +442,10 @@ def users_handler(state: PrompterState) -> PrompterState:
     for keyword in state["keywords"]:
         result = get_semantic_user(keyword)
         markdown_results += f"### Users for: **{keyword}**\n{result}\n"
-    print(markdown_results)
+    
+    if not markdown_results.strip():
+        markdown_results = "I'm sorry, we didn't find users about it."
+    state["results"] = markdown_results
     return state
 
 # ---- Graph ---- #
@@ -446,19 +480,68 @@ builder.add_edge("writing_tips", END)
 builder.add_edge("casts_embed", END)
 builder.add_edge("users_embed", END)  
 
-# Compile graph
-agent_social_prompter = builder.compile()
-# Visualize graph
-visualize_graph = True
-if visualize_graph:
-    image = Image(agent_social_prompter.get_graph().draw_mermaid_png())  
-    with open("../graphs/social_prompter.png", "wb") as f:
-        f.write(image.data)
-config = {
-    "configurable": {"thread_id": "1"},
-    "callbacks": [langfuse_handler],
-}
+if "agent" not in st.session_state:
+    st.session_state.mbd_agent = builder.compile()
 
-messages = agent_social_prompter.invoke({"fid": 6473, "goal": "writing", "casts": [], "all_keywords":{}, "keywords": [], "messages": []}, config)
-for m in messages['messages']:
-    m.pretty_print()
+if "langfuse_handler" not in st.session_state:
+    # CallbackHandler() should now correctly pick up the env vars
+    st.session_state.langfuse_handler = CallbackHandler()
+
+if "config" not in st.session_state:
+    st.session_state.config = {
+        "configurable": {"thread_id": "1"},
+        "callbacks": [st.session_state.langfuse_handler],
+    }
+
+
+# ---- Streamlit UI ---- #
+
+col1, col2, col3 = st.columns(3)
+
+if "show_input" not in st.session_state:
+    st.session_state.show_input = False
+
+if "clicked_button" not in st.session_state:
+    st.session_state.clicked_button = None
+
+with col1:
+    if st.button("Writing tips"):
+        st.session_state.clicked_button = "writing"
+
+with col2:
+    if st.button("Discover casts"):
+        st.session_state.clicked_button = "casts"
+
+with col3:
+    if st.button("Discover users"):
+        st.session_state.clicked_button = "users"
+
+if st.session_state.clicked_button:
+    st.subheader(f"You clicked: {st.session_state.clicked_button}")
+    user_input = st.text_input("Insert your FID here")
+
+    if user_input:
+        st.success(f"You wrote: {user_input} (from {st.session_state.clicked_button})")
+    
+    # Run the agent with the user input
+    if user_input and st.session_state.clicked_button:
+        agent =  st.session_state.mbd_agent
+        response = agent.invoke(
+            PrompterState({
+                "fid": f"{user_input}",
+                "goal": f"{st.session_state.clicked_button}",
+                "all_keywords":{},
+                "keywords": [],
+                "results": "",
+                "messages": []
+            }), 
+            config=st.session_state.config
+        )
+        # Display the results
+        if response["results"]:
+            st.markdown(response["results"])
+        else:
+            st.warning("No results found. Please try again with different input.")
+
+
+
