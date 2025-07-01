@@ -1,5 +1,6 @@
 from langchain_groq import ChatGroq
 from langgraph.graph import START, END, StateGraph, MessagesState
+from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 from typing import List
 import requests
@@ -8,6 +9,8 @@ import json
 from langfuse.langchain import CallbackHandler
 import re
 import streamlit as st
+from typing import Optional
+import logging
 
 st.set_page_config(
     page_title="Social Prompting App",
@@ -187,9 +190,12 @@ def get_semantic_user(query: str) -> str:
 
 
 # ---- State of the graph ---- #
-class PrompterState(MessagesState):
+class IcePrompterState(MessagesState):
+    summary: Optional[str] = None
+    conversation_count: Optional[int] = None
     fid : int
     goal: str
+    ice : str
     casts: List[str]
     all_keywords: json
     keywords: List[str]
@@ -202,17 +208,23 @@ extrapolator_LLM = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct
 ranker_LLM = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.2)
 writing_tips_LLM = ChatGroq(model="qwen/qwen3-32b", temperature=0.2)
 
+summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.2)
+conversational_llm = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.2)
+json_filler_llm = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.2)
+
 
 
 # ---- Nodes ---- #
-def cast_fetcher(state: PrompterState) -> PrompterState:
+def cast_fetcher(state: IcePrompterState) -> IcePrompterState:
     """
     Fetch casts for the given user ID.
     """
-    state["casts"] = get_user_casts(str(state["fid"])) 
+    if state["casts"]==[]:
+        state["casts"] = get_user_casts(str(state["fid"])) 
+    
     return state
 
-def topic_extrapolator(state: PrompterState) -> PrompterState:
+def topic_extrapolator(state: IcePrompterState) -> IcePrompterState:
     """
     Extract keywords from each cast using the LLM and organize them into macro-categories
     with related micro-topics in a JSON format.
@@ -262,7 +274,7 @@ def topic_extrapolator(state: PrompterState) -> PrompterState:
     state["all_keywords"] = extracted_topics_by_category
     return state
 
-def topic_compressor(state: PrompterState) -> PrompterState:
+def topic_compressor(state: IcePrompterState) -> IcePrompterState:
     """
     Compress the list of keywords into a maximum of 5 topics that represent the core themes.
     This function now expects state["keywords"] to be a dictionary with categories and lists of micro-topics.
@@ -309,7 +321,7 @@ def topic_compressor(state: PrompterState) -> PrompterState:
     state["keywords"] = keywords
     return state
 
-def prompter_router(state: PrompterState) -> PrompterState:
+def prompter_router(state: IcePrompterState) -> IcePrompterState:
     """
     Route the state to the appropriate handler based on the goal.
     The goal can be one of: "writing", "casts", "users"
@@ -317,7 +329,7 @@ def prompter_router(state: PrompterState) -> PrompterState:
     state["route"] = state["goal"]
     return state
 
-def writing_tips_handler(state: PrompterState) -> PrompterState:
+def writing_tips_handler(state: IcePrompterState) -> IcePrompterState:
     """
     Handle writing-related content.
     """
@@ -417,7 +429,7 @@ def writing_tips_handler(state: PrompterState) -> PrompterState:
 
     return state
 
-def casts_handler(state: PrompterState) -> PrompterState:
+def casts_handler(state: IcePrompterState) -> IcePrompterState:
     """
     Handle casts-related content.
     """
@@ -433,7 +445,7 @@ def casts_handler(state: PrompterState) -> PrompterState:
 
     return state
 
-def users_handler(state: PrompterState) -> PrompterState:
+def users_handler(state: IcePrompterState) -> IcePrompterState:
     """
     Handle users-related content.
     """
@@ -448,9 +460,148 @@ def users_handler(state: PrompterState) -> PrompterState:
     state["results"] = markdown_results
     return state
 
+# ---- Icebreaker ---- #
+
+def icebreaker_router(state: IcePrompterState) -> IcePrompterState:
+    """
+    Route the state to the appropriate handler based on the goal.
+    The goal can be one of: "writing", "casts", "users"
+    """
+    number_of_casts = len(state["casts"])
+    if number_of_casts >= 4:
+        state["ice"] = "enough"
+    elif number_of_casts < 4 and state["conversation_count"]==3:
+        state["ice"] = "now enough"
+    else:
+        state["ice"] = "not enough"
+    return state
+
+def summarize_history(state: IcePrompterState):
+    messages = state["messages"]
+    history_text = ""
+    if len(messages) == 1:
+        history_text = messages[0].content
+    else:
+        history_text = "\n".join(
+            [f"{m.type.upper()}: {m.content}" for m in messages]
+        )
+
+    summary_prompt = (
+        f"""You are an expert conversation summarizer. Your task is to produce a concise, accurate summary of the conversation below.
+            - Paraphrase and condense the exchange, capturing all key details, facts, and user preferences.
+            - Retain any personal information, names, interests, or specific topics mentioned by the user.
+            - Summarize AI responses very briefly, focusing on their intent.
+            - Do not add any commentary or interpretation.
+            - Output only the summary, without any extra text.
+            Conversation:
+            {history_text}
+        """
+    )
+
+    summary_output = summarizer_llm.invoke(summary_prompt)
+    summarized_context = summary_output.content
+
+    # Store the summary in the state
+    if state["summary"] is None:
+        state["summary"] = summarized_context
+    else:
+        state["summary"] += "\n" + summarized_context
+    return state
+
+def json_filler(state: IcePrompterState):
+    all_keywords = state["all_keywords"]
+    messages = state["messages"]
+    # Get the latest user message
+    user_message = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            user_message = msg.content
+            break
+
+    if not user_message:
+        return {"all_keywords": all_keywords, "messages": messages}
+
+    # Prepare prompt for the LLM
+    json_prompt = (
+        f"""You are an expert at extracting structured information from user conversations.\n
+        Below is a summary of the conversation so far:\n
+        Summary:\n{state['summary']}\n
+        Your task:\n
+        - Carefully analyze the summary for any new relevant keywords, topics, or interests that fit as macro or micro categories.\n
+        - If you identify new relevant keywords, add them to the appropriate place in the JSON structure. Do not remove or modify existing entries unless necessary for accuracy.\n
+        - If no new keywords are found, return the JSON unchanged.\n
+        Return ONLY a valid JSON object. Do not include any explanations, comments, or extra text.\n
+        Example:
+        - Summary: "The user enjoys hiking and photography, particularly in nature, and also reads science fiction books."
+        - Output: {{"Hobbies": ["Hiking", "Photography"], "Books": ["Science Fiction"]}}
+    """)
+
+    response = json_filler_llm.invoke(json_prompt)
+    # Check if the response is valid JSON
+    try:
+        # Rimuove ``` e spazi
+        cleaned = re.sub(r"^```(?:json)?|```$", "", response.content.strip(), flags=re.MULTILINE).strip()
+        updated_keywords = json.loads(cleaned)
+    except Exception as e:
+        #logging.warning(f"Failed to parse JSON from LLM: {response.content}")
+        updated_keywords = all_keywords
+
+
+    # Store the updated keywords in the state
+    state["all_keywords"] = updated_keywords
+    return state
+
+def engage_conversation(state: IcePrompterState):
+    messages = state["messages"]
+
+    if messages[-1].type == "human":
+
+        # Prepare the system message with the user message
+        conversation_prompt = (
+            f"""You are an expert question-asking assistant. Your job is to ask friendly, open-ended questions that help the user share more about their interests.
+
+                User message:
+                {messages[-1].content}
+
+                Instructions:
+                - Ask questions related to ALL the user's mentioned interests.
+                - Always ask for other interests or topics they might want to discuss, even if not related to the current conversation.
+                - Output only the assistant's next message — a direct question.
+
+                Example:
+                - User's previous message: "I'm interested in Web3 technology and how it can change the way we interact online. I also love hiking."
+                - Assistant: "Is there something specific about Web3 or hiking that you find most exciting? Are there other completely different things you're into?"
+            """
+        )
+    
+        # Increment conversation count
+        if "conversation_count" not in state:
+            state["conversation_count"] = 0
+        state["conversation_count"] += 1
+
+        response = conversational_llm.invoke(conversation_prompt)
+        response_content = response.content
+        # Extract the text after the second <think> tag, if present
+        last_think_end_index = response_content.rfind('</think>')
+
+        if last_think_end_index == -1:
+            # If no </think> tag is found, return the entire text
+            content_after_think = response_content
+        else:
+            # Get all content after the last </think> tag
+            content_after_think = response_content[last_think_end_index + len('</think>'):]
+
+        state["messages"].append(AIMessage(content=content_after_think.strip())) 
+
+    return state
+
 # ---- Graph ---- #
-builder = StateGraph(PrompterState)
+builder = StateGraph(IcePrompterState)
 builder.add_node('fetcher', cast_fetcher)
+builder.add_node('icebreaker_router', icebreaker_router)
+builder.add_node('summarizer', summarize_history)
+builder.add_node('json_filler', json_filler)
+builder.add_node('engage_conversation', engage_conversation)
 builder.add_node('extrapolator', topic_extrapolator)
 builder.add_node('compressor', topic_compressor)
 builder.add_node('prompter_router', prompter_router)
@@ -460,10 +611,18 @@ builder.add_node('users_embed', users_handler)
 
 # Add edges
 builder.add_edge(START, "fetcher")
-builder.add_edge("fetcher", "extrapolator")
+builder.add_edge("fetcher", "icebreaker_router")
+builder.add_conditional_edges(
+    "icebreaker_router",
+    lambda x: x["ice"],
+    {
+        "enough": "extrapolator",
+        "now enough": "compressor",
+        "not enough": "summarizer",
+    }
+)
 builder.add_edge("extrapolator", "compressor")
 builder.add_edge("compressor", "prompter_router")
-
 # Add conditional edges from router based on goal
 builder.add_conditional_edges(
     "prompter_router",
@@ -475,10 +634,14 @@ builder.add_conditional_edges(
     }
 )
 
+builder.add_edge("summarizer", "json_filler")
+builder.add_edge("json_filler", "engage_conversation")
+
 # Add edges to END
 builder.add_edge("writing_tips", END)
 builder.add_edge("casts_embed", END)
 builder.add_edge("users_embed", END)  
+builder.add_edge("engage_conversation", END)
 
 if "agent" not in st.session_state:
     st.session_state.mbd_agent = builder.compile()
@@ -493,6 +656,23 @@ if "config" not in st.session_state:
         "callbacks": [st.session_state.langfuse_handler],
     }
 
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+    st.session_state["messages"].append({"role": "assistant", "content": "Hello! I am your icebreaker assistant. I'm here to get to know you better. What are you most interested in or passionate about?"})
+
+if "state" not in st.session_state:
+    st.session_state.state = IcePrompterState(
+        messages=st.session_state["messages"],
+        summary=None,
+        conversation_count=0,
+        fid="",
+        goal="",
+        ice="",
+        casts=[],
+        all_keywords={},
+        keywords=[],
+        results=""
+    )
 
 # ---- Streamlit UI ---- #
 
@@ -503,6 +683,9 @@ if "show_input" not in st.session_state:
 
 if "clicked_button" not in st.session_state:
     st.session_state.clicked_button = None
+
+if "fid" not in st.session_state:
+    st.session_state.fid = None
 
 with col1:
     if st.button("Writing tips"):
@@ -516,32 +699,111 @@ with col3:
     if st.button("Discover users"):
         st.session_state.clicked_button = "users"
 
+
+agent =  st.session_state.mbd_agent
+state = st.session_state.state
+
 if st.session_state.clicked_button:
-    #st.subheader(f"You clicked: {st.session_state.clicked_button}")
-    user_input = st.text_input("Insert your FID here")
 
-    if user_input:
-        st.success(f"You wrote: {user_input} (from {st.session_state.clicked_button})")
-    
-    # Run the agent with the user input
-    if user_input and st.session_state.clicked_button:
-        agent =  st.session_state.mbd_agent
-        response = agent.invoke(
-            PrompterState({
-                "fid": f"{user_input}",
-                "goal": f"{st.session_state.clicked_button}",
-                "all_keywords":{},
-                "keywords": [],
-                "results": "",
-                "messages": []
-            }), 
-            config=st.session_state.config
+    if not st.session_state.fid:
+        user_input = st.text_input("Insert your FID here:", key="fid_input")
+        st.session_state.fid = user_input
+
+    if st.session_state.fid and st.session_state.clicked_button:
+        st.info(f"You wrote: {st.session_state.fid} (from {st.session_state.clicked_button})")
+
+        payload = {
+            "messages": st.session_state["messages"][-1],
+            "summary": st.session_state.state["summary"],
+            "conversation_count": st.session_state.state["conversation_count"],
+            "fid": st.session_state.fid,
+            "goal": st.session_state.clicked_button,
+            "ice": st.session_state.state["ice"],
+            "casts": st.session_state.state["casts"],
+            "all_keywords": st.session_state.state["all_keywords"],
+            "keywords": st.session_state.state["keywords"],
+            "results": ""
+        }
+
+        response = agent.invoke(payload, config=st.session_state.config)
+
+        if st.session_state.state["conversation_count"] != 0:
+            st.session_state["messages"].append({"role": "assistant", "content": response["messages"][-1].content})
+
+        # Save the current state
+        st.session_state.state = IcePrompterState(
+            messages=response["messages"],
+            summary=response["summary"],
+            conversation_count=response["conversation_count"],
+            fid=response["fid"],
+            goal=response["goal"],
+            ice=response["ice"],
+            casts=response["casts"],
+            all_keywords=response["all_keywords"],
+            keywords=response["keywords"],
+            results=response["results"]
         )
-        # Display the results
-        if response["results"]:
-            st.markdown(response["results"])
+
+        if response["results"] != "":
+            with st.chat_message("assistant"):
+                st.markdown(response["results"])
+
         else:
-            st.warning("No results found. Please try again with different input.")
+            # Display past messages
+            # Mostra la conversazione finora
+            for msg in st.session_state["messages"]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
 
+            # Input utente
+            user_query = st.chat_input("Scrivi qualcosa...")
 
+            if user_query:
+                # Aggiungi il messaggio dell'utente alla sessione
+                st.session_state["messages"].append({"role": "user", "content": user_query})
+
+                with st.chat_message("user"):
+                    st.markdown(user_query)
+
+                # Prepara il payload per l'agente
+                payload = {
+                    "messages": st.session_state["messages"][-1],
+                    "summary": st.session_state.state["summary"],
+                    "conversation_count": st.session_state.state["conversation_count"],
+                    "fid": st.session_state.fid,
+                    "goal": st.session_state.clicked_button,
+                    "ice": st.session_state.state["ice"],
+                    "casts": st.session_state.state["casts"],
+                    "all_keywords": st.session_state.state["all_keywords"],
+                    "keywords": st.session_state.state["keywords"],
+                    "results": ""
+                }
+
+                # Chiamata all'agente
+                response = agent.invoke(payload, config=st.session_state.config)
+
+                # Aggiorna lo stato
+                st.session_state.state = IcePrompterState(
+                    messages=response["messages"],
+                    summary=response["summary"],
+                    conversation_count=response["conversation_count"],
+                    fid=response["fid"],
+                    goal=response["goal"],
+                    ice=response["ice"],
+                    casts=response["casts"],
+                    all_keywords=response["all_keywords"],
+                    keywords=response["keywords"],
+                    results=response["results"]
+                )
+
+                # Salva l'ultima risposta del LLM
+                assistant_reply = response["messages"][-1].content
+                st.session_state["messages"].append({"role": "assistant", "content": assistant_reply})
+
+                # Mostra la risposta appropriata
+                with st.chat_message("assistant"):
+                    if response["results"] != "":  # Risultato finale disponibile
+                            st.markdown(response["results"])
+                    else:  # Conversazione in corso
+                            st.markdown(assistant_reply)
 

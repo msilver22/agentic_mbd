@@ -577,7 +577,7 @@ builder.add_conditional_edges(
     lambda x: x["ice"],
     {
         "enough": "extrapolator",
-        "now enough": "prompter_router",
+        "now enough": "compressor",
         "not enough": "summarizer",
     }
 )
@@ -616,7 +616,3 @@ config = {
     "configurable": {"thread_id": "1"},
     "callbacks": [langfuse_handler],
 }
-
-#messages = agent_social_prompter.invoke({"fid": 6473, "goal": "writing", "casts": [], "all_keywords":{}, "keywords": [], "messages": []}, config)
-#for m in messages['messages']:
-#    m.pretty_print()
