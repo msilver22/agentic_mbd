@@ -31,8 +31,6 @@ class IcebreakerState(MessagesState):
     all_keywords: json
     
 
-
-
 # ---- LLMs ---- #
 summarizer_llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.2)
 conversational_llm = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.2)
@@ -185,14 +183,17 @@ config = {
     "callbacks": [langfuse_handler],
 }
 
-first_message = AIMessage(content="Hello! I am your icebreaker assistant. I'm here to get to know you better. What are you most interested in or passionate about?")
-user_message = HumanMessage(content="I love hiking and photography, especially in nature. I also enjoy reading science fiction books.")
 
-messages = agent_icebreaker.invoke({ "all_keywords":{}, "messages": [first_message, user_message], "summary": None}, config)
-for m in messages['messages']:
-    m.pretty_print()
-
-second_message = HumanMessage(content="I also like cooking Italian food, especially pasta dishes. I love basketball")
-messages = agent_icebreaker.invoke({ "all_keywords": {}, "messages": [second_message], "summary": messages["summary"], "conversation_count": messages["conversation_count"]}, config)
-for m in messages['messages']:
-    m.pretty_print()
+# ---- Example usage ---- #
+#
+#first_message = AIMessage(content="Hello! I am your icebreaker assistant. I'm here to get to know you better. What are you most interested in or passionate about?")
+#user_message = HumanMessage(content="I love hiking and photography, especially in nature. I also enjoy reading science fiction books.")
+#
+#messages = agent_icebreaker.invoke({ "all_keywords":{}, "messages": [first_message, user_message], "summary": None}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
+#
+#second_message = HumanMessage(content="I also like cooking Italian food, especially pasta dishes. I love basketball")
+#messages = agent_icebreaker.invoke({ "all_keywords": {}, "messages": [second_message], "summary": messages["summary"], "conversation_count": messages["conversation_count"]}, config)
+#for m in messages['messages']:
+#    m.pretty_print()
