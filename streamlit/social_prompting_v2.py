@@ -118,6 +118,11 @@ def get_user_casts(user_id: str) -> List[str]:
     for cast in casts:
         formatted_cast = ""
         text = re.sub(r'\n+', '. ', cast.get("text", "No text provided"))
+        if text == "":
+            profile = cast.get("profile", {})
+            bio = profile.get("bio", {})
+            text = re.sub(r'\n+', '. ', bio.get("text", "No text provided"))
+
         formatted_cast += "\n[TARGET POST]\n"
         formatted_cast += text 
         
@@ -231,47 +236,50 @@ def topic_extrapolator(state: IcePrompterState) -> IcePrompterState:
     The LLM will analyze both the target post and related post (if present)
     to generate relevant keywords.
     """
-    extracted_topics_by_category = {} # Initialize an empty dictionary to store topics by category
-    
-    for cast in state["casts"]:
-        extrapolator_prompt = f"""You are an advanced AI assistant specialized in analyzing social media posts to identify user interests for personalized recommendations. 
-        Your goal is to infer concrete, actionable interests from the user's post content and categorize them.
 
-        Instructions:
-        - Read the following social media post carefully.
-        - Identify the main interest categories (e.g., "Food", "Travel", "Technology").
-        - For each main category, identify 1-3 highly specific sub-interests or topics (e.g., "Italian Cuisine", "Hiking in Dolomites", "AI Development").
-        - Focus on themes that are:
-            - Highly specific and niche, not generic.
-            - Indicative of a genuine user interest that could lead to specific recommendations.
-            - Actionable for calling recommendation APIs.
-        - Return the output in a JSON format where keys are the main categories and values are lists of specific sub-interests.
-        - Return ONLY the JSON object, nothing else.
-
-        Example:
-        Post content: "I love trying new pasta recipes, especially Roman ones like carbonara! Also planning a trip to Tuscany next summer, maybe rent a villa."
-        Output: {{"Food": ["Roman Cuisine", "Pasta Recipes"], "Travel": ["Tuscany Travel", "Villa Rentals"]}}
-
-        Post content:
-        {cast}"""
-
-        response = extrapolator_LLM.invoke(extrapolator_prompt)
+    if state["all_keywords"] == {}: # Do not repeat the extraction if all_keywords is already populated
+        extracted_topics_by_category = {} # Initialize an empty dictionary to store topics by category
         
-        try:
-            # Parse the JSON output from the LLM
-            llm_output = json.loads(response.content)
-            for category, topics in llm_output.items():
-                if category not in extracted_topics_by_category:
-                    extracted_topics_by_category[category] = []
-                extracted_topics_by_category[category].extend([t.strip().lower() for t in topics])
-        except json.JSONDecodeError:
-            print(f"Warning: LLM did not return valid JSON for cast: {cast}")
-            print(f"LLM response: {response.content}")
-            # Handle cases where LLM might not return perfect JSON
-            # You might want to log this or try a regex fallback if needed
-            pass
-    
-    state["all_keywords"] = extracted_topics_by_category
+        for cast in state["casts"]:
+            extrapolator_prompt = f"""You are an advanced AI assistant specialized in analyzing social media posts to identify user interests for personalized recommendations. 
+            Your goal is to infer concrete, actionable interests from the user's post content and categorize them.
+
+            Instructions:
+            - Read the following social media post carefully.
+            - Identify the main interest categories (e.g., "Food", "Travel", "Technology").
+            - For each main category, identify 1-3 highly specific sub-interests or topics (e.g., "Italian Cuisine", "Hiking in Dolomites", "AI Development").
+            - Focus on themes that are:
+                - Highly specific and niche, not generic.
+                - Indicative of a genuine user interest that could lead to specific recommendations.
+                - Actionable for calling recommendation APIs.
+            - Return the output in a JSON format where keys are the main categories and values are lists of specific sub-interests.
+            - Return ONLY the JSON object, nothing else.
+
+            Example:
+            Post content: "I love trying new pasta recipes, especially Roman ones like carbonara! Also planning a trip to Tuscany next summer, maybe rent a villa."
+            Output: {{"Food": ["Roman Cuisine", "Pasta Recipes"], "Travel": ["Tuscany Travel", "Villa Rentals"]}}
+
+            Post content:
+            {cast}"""
+
+            response = extrapolator_LLM.invoke(extrapolator_prompt)
+            
+            try:
+                # Parse the JSON output from the LLM
+                llm_output = json.loads(response.content)
+                for category, topics in llm_output.items():
+                    if category not in extracted_topics_by_category:
+                        extracted_topics_by_category[category] = []
+                    extracted_topics_by_category[category].extend([t.strip().lower() for t in topics])
+            except json.JSONDecodeError:
+                print(f"Warning: LLM did not return valid JSON for cast: {cast}")
+                print(f"LLM response: {response.content}")
+                # Handle cases where LLM might not return perfect JSON
+                # You might want to log this or try a regex fallback if needed
+                pass
+        
+        state["all_keywords"] = extracted_topics_by_category
+
     return state
 
 def topic_compressor(state: IcePrompterState) -> IcePrompterState:
@@ -502,10 +510,8 @@ def summarize_history(state: IcePrompterState):
     summarized_context = summary_output.content
 
     # Store the summary in the state
-    if state["summary"] is None:
-        state["summary"] = summarized_context
-    else:
-        state["summary"] += "\n" + summarized_context
+    state["summary"] =  summarized_context
+
     return state
 
 def json_filler(state: IcePrompterState):
@@ -565,7 +571,7 @@ def engage_conversation(state: IcePrompterState):
 
                 Instructions:
                 - Ask questions related to ALL the user's mentioned interests.
-                - Always ask for other interests or topics they might want to discuss, even if not related to the current conversation.
+                - ALWAYS ask for other interests or topics they might want to discuss, even if not related to the current conversation.
                 - Output only the assistant's next message — a direct question.
 
                 Example:
@@ -575,9 +581,7 @@ def engage_conversation(state: IcePrompterState):
         )
     
         # Increment conversation count
-        if "conversation_count" not in state:
-            state["conversation_count"] = 0
-        state["conversation_count"] += 1
+        #state["conversation_count"] += 1
 
         response = conversational_llm.invoke(conversation_prompt)
         response_content = response.content
@@ -654,11 +658,14 @@ if "config" not in st.session_state:
     st.session_state.config = {
         "configurable": {"thread_id": "1"},
         "callbacks": [st.session_state.langfuse_handler],
+        "metadata": {
+            "langfuse_session_id": "pippo",
+        },
     }
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
-    st.session_state["messages"].append({"role": "assistant", "content": "Hello! I am your icebreaker assistant. I'm here to get to know you better. What are you most interested in or passionate about?"})
+    st.session_state["messages"].append({"role": "assistant", "content": "Hello! I’m your icebreaker assistant, here to get to know you better. Since you haven’t had much interaction on the social network yet, we’d love to learn more about you. Could you tell us what you’re most interested in or passionate about?"})
 
 if "state" not in st.session_state:
     st.session_state.state = IcePrompterState(
@@ -673,6 +680,7 @@ if "state" not in st.session_state:
         keywords=[],
         results=""
     )
+
 
 # ---- Streamlit UI ---- #
 
@@ -713,7 +721,7 @@ if st.session_state.clicked_button:
         st.info(f"You wrote: {st.session_state.fid} (from {st.session_state.clicked_button})")
 
         payload = {
-            "messages": st.session_state["messages"][-1],
+            "messages": st.session_state["messages"],
             "summary": st.session_state.state["summary"],
             "conversation_count": st.session_state.state["conversation_count"],
             "fid": st.session_state.fid,
@@ -727,8 +735,6 @@ if st.session_state.clicked_button:
 
         response = agent.invoke(payload, config=st.session_state.config)
 
-        if st.session_state.state["conversation_count"] != 0:
-            st.session_state["messages"].append({"role": "assistant", "content": response["messages"][-1].content})
 
         # Save the current state
         st.session_state.state = IcePrompterState(
@@ -750,24 +756,25 @@ if st.session_state.clicked_button:
 
         else:
             # Display past messages
-            # Mostra la conversazione finora
             for msg in st.session_state["messages"]:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Input utente
-            user_query = st.chat_input("Scrivi qualcosa...")
+            # User input
+            user_query = st.chat_input("Write anything...")
 
             if user_query:
-                # Aggiungi il messaggio dell'utente alla sessione
+                # Add the user's message to the session
                 st.session_state["messages"].append({"role": "user", "content": user_query})
+                st.session_state.state["messages"].append(HumanMessage(content=user_query))
+                st.session_state.state["conversation_count"] += 1
 
                 with st.chat_message("user"):
                     st.markdown(user_query)
 
-                # Prepara il payload per l'agente
+                # Prepare the payload for the agent
                 payload = {
-                    "messages": st.session_state["messages"][-1],
+                    "messages": st.session_state["messages"],
                     "summary": st.session_state.state["summary"],
                     "conversation_count": st.session_state.state["conversation_count"],
                     "fid": st.session_state.fid,
@@ -779,10 +786,14 @@ if st.session_state.clicked_button:
                     "results": ""
                 }
 
-                # Chiamata all'agente
+                if st.session_state.state["conversation_count"] == 3:
+                    with st.chat_message("assistant"):
+                        st.markdown("Great! We’ve got enough information to move forward. Let’s dive into some social prompting!")
+
+                # Invoke the agent with the payload
                 response = agent.invoke(payload, config=st.session_state.config)
 
-                # Aggiorna lo stato
+                # Update the state
                 st.session_state.state = IcePrompterState(
                     messages=response["messages"],
                     summary=response["summary"],
@@ -796,14 +807,15 @@ if st.session_state.clicked_button:
                     results=response["results"]
                 )
 
-                # Salva l'ultima risposta del LLM
-                assistant_reply = response["messages"][-1].content
-                st.session_state["messages"].append({"role": "assistant", "content": assistant_reply})
+                # Add the assistant's reply to the session
+                if st.session_state.state["conversation_count"] < 3:
+                    assistant_reply = response["messages"][-1].content
+                    st.session_state["messages"].append({"role": "assistant", "content": assistant_reply})
 
-                # Mostra la risposta appropriata
+                # Display the assistant's reply
                 with st.chat_message("assistant"):
-                    if response["results"] != "":  # Risultato finale disponibile
+                    if response["results"] != "":  # Final result available
                             st.markdown(response["results"])
-                    else:  # Conversazione in corso
+                    else:  # Ongoing conversation
                             st.markdown(assistant_reply)
 
