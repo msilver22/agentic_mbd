@@ -22,10 +22,11 @@ It can use several tools, including:
 - Semantic users (based on user query)
 - Suggested users (based on user ID)
 
-### ✏️ Graph Designs
+### ✏️ Graph Design
 
-![Architecture](graphs/feed_builder.png)
-![Architecture](graphs/suggest_users.png)
+<p align="center">
+  <img src="graphs/building_block.png" alt="Architecture" width="400"/>
+</p>
 
 
 
