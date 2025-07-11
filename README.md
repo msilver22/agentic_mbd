@@ -44,7 +44,10 @@ This agent combines three distinct functionalities using a unified LangGraph arc
 3. **Small Talk** : Engages in general conversation when the user is making casual inquiries.
 
 ### ✏️ Graph Design
-![Architecture](graphs/mbd_agent.png)
+
+<p align="center">
+  <img src="graphs/feed_builder.png" alt="Architecture" width="400"/>
+</p>
 
 The agent evaluates user input and decides which action to take based on the user's query.
 
