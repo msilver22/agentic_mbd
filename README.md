@@ -15,7 +15,7 @@ It can use several tools, including:
 - Popular casts
 - Semantic casts (based on user query)
 
-### 2 – Social Prompter
+### 2 – Discover New Users
 Discover relevant people in the Farcaster network.
 It can use several tools, including:
 - Similar users (based on user ID)
@@ -40,7 +40,7 @@ It can use several tools, including:
 
 This agent combines three distinct functionalities using a unified LangGraph architecture:
 1. **Feed Builder**
-2. **Social Prompter** 
+2. **New Users** 
 3. **Small Talk** : Engages in general conversation when the user is making casual inquiries.
 
 ### ✏️ Graph Design
@@ -53,13 +53,16 @@ The agent evaluates user input and decides which action to take based on the use
 
 The **planner node** helps determine whether to:
 - Trigger the feed-builder node (for querying Farcaster content),
-- Activate the social-prompter node (to suggest users), or
+- Activate the new-user node (to suggest users), or
 - Engage the small-talk node (for conversational interaction).
 
 ### 🧠 Powered By
 - [*Groq LLMs*](https://console.groq.com/dashboard/limits): `llama-3.1-8b-instant` for summarization and small talks, `deepseek-r1-distill-llama-70b` for *feed builder* and *social prompter* node, and `deepseek-r1-distill-qwen-32b` for the *planner* node.
 - [*Langfuse*](https://cloud.langfuse.com/): Integrated for tracing and observability
 - [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) APIs: For fetching real-time data from Farcaster
+
+## 🤖 MBD Agent for Social Prompting
+TODO
 
 # 🚀 Reproducibility and Usage
 
