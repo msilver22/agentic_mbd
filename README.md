@@ -36,7 +36,7 @@ It can use several tools, including:
 - [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) APIs: For fetching real-time data from Farcaster
 
 
-## 🤖 MBD Agent: Combining Feed Building and Social Prompting
+## 🤖 MBD Agent for Feed Building
 
 This agent combines three distinct functionalities using a unified LangGraph architecture:
 1. **Feed Builder**
