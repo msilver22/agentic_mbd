@@ -11,6 +11,7 @@ import re
 import streamlit as st
 from typing import Optional
 import logging
+import time
 
 st.set_page_config(
     page_title="Social Prompting App",
@@ -752,7 +753,16 @@ if st.session_state.clicked_button:
 
         if response["results"] != "":
             with st.chat_message("assistant"):
-                st.markdown(response["results"])
+                #st.markdown(response["results"])
+
+                # Simulate typing effect
+                placeholder = st.empty()
+                full_response = ""
+                for char in response["results"]:
+                    full_response += char
+                    placeholder.markdown(full_response + "▌")
+                    time.sleep(0.01)  # adjust typing speed here
+                placeholder.markdown(full_response)  # final render without cursor
 
         else:
             # Display past messages
@@ -788,7 +798,17 @@ if st.session_state.clicked_button:
 
                 if st.session_state.state["conversation_count"] == 3:
                     with st.chat_message("assistant"):
-                        st.markdown("Great! We’ve got enough information to move forward. Let’s dive into some social prompting!")
+                        #st.markdown("Great! We’ve got enough information to move forward. Let’s dive into some social prompting!")
+                        
+                        bot_reply = "Great! We’ve got enough information to move forward. Let’s dive into some social prompting!"
+                        # Simulate typing effect
+                        placeholder = st.empty()
+                        full_response = ""
+                        for char in bot_reply:
+                            full_response += char
+                            placeholder.markdown(full_response + "▌")
+                            time.sleep(0.01)  # adjust typing speed here
+                        placeholder.markdown(full_response)  # final render without cursor
 
                 # Invoke the agent with the payload
                 response = agent.invoke(payload, config=st.session_state.config)
@@ -815,7 +835,24 @@ if st.session_state.clicked_button:
                 # Display the assistant's reply
                 with st.chat_message("assistant"):
                     if response["results"] != "":  # Final result available
-                            st.markdown(response["results"])
+                            #st.markdown(response["results"])
+
+                            # Simulate typing effect
+                            placeholder = st.empty()
+                            full_response = ""
+                            for char in response["results"]:
+                                full_response += char
+                                placeholder.markdown(full_response + "▌")
+                                time.sleep(0.01)  # adjust typing speed here
+                            placeholder.markdown(full_response)  # final render without cursor
                     else:  # Ongoing conversation
-                            st.markdown(assistant_reply)
+                            #st.markdown(assistant_reply)
+                            # Simulate typing effect
+                            placeholder = st.empty()
+                            full_response = ""
+                            for char in assistant_reply:
+                                full_response += char
+                                placeholder.markdown(full_response + "▌")
+                                time.sleep(0.01)  # adjust typing speed here
+                            placeholder.markdown(full_response)  # final render without cursor
 
