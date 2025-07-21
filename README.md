@@ -65,7 +65,7 @@ Using structured LangGraph workflows, we implement the two following agents: one
 ### ✏️ Graph Design
 
 <p align="center">
-  <img src="graphs/feed_builder.png" alt="Architecture" width="400"/>
+  <img src="graphs/social_prompter.png" alt="Architecture" width="400"/>
 </p>
 
 
