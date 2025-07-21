@@ -1,8 +1,10 @@
 # 🤖 AI Agents for Feed Building & Social Prompting 
 
+## 🤖 MBD Agent for Feed Building
+
 This project showcases several AI agents built using [*LangGraph*](https://www.langchain.com/langgraph) and [*Groq Inference*](https://groq.com/), designed to enhance interaction with the Farcaster decentralized social network. These agents leverage the powerful [*mbd*](https://www.mbd.xyz/) API to enable dynamic feed building and social prompting.
 
-## 🔧 Building blocks
+### 🔧 Building blocks
 Using structured LangGraph workflows, we implement the two following agents.
 Both agents maintain a contextual memory summary of the conversation, allowing them to interpret ambiguous user inputs, remember past user preferences throughout the session and reduce token usage.
 All results are returned in a human-readable Markdown format.
@@ -31,12 +33,11 @@ It can use several tools, including:
 
 
 ### 🧠 Powered By
-- [*Groq LLMs*](https://console.groq.com/dashboard/limits): `llama-3.1-8b-instant` for summarization and `deepseek-r1-distill-llama-70b` for tool-enabled interaction
+- [*Groq LLMs*](https://console.groq.com/dashboard/limits)
 - [*Langfuse*](https://cloud.langfuse.com/): Integrated for tracing and observability
 - [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) APIs: For fetching real-time data from Farcaster
 
-
-## 🤖 MBD Agent for Feed Building
+---
 
 This agent combines three distinct functionalities using a unified LangGraph architecture:
 1. **Feed Builder**
@@ -56,13 +57,17 @@ The **planner node** helps determine whether to:
 - Activate the new-user node (to suggest users), or
 - Engage the small-talk node (for conversational interaction).
 
-### 🧠 Powered By
-- [*Groq LLMs*](https://console.groq.com/dashboard/limits): `llama-3.1-8b-instant` for summarization and small talks, `deepseek-r1-distill-llama-70b` for *feed builder* and *social prompter* node, and `deepseek-r1-distill-qwen-32b` for the *planner* node.
-- [*Langfuse*](https://cloud.langfuse.com/): Integrated for tracing and observability
-- [*mbd*](https://docs.mbd.xyz/reference/intro/getting-started) APIs: For fetching real-time data from Farcaster
-
 ## 🤖 MBD Agent for Social Prompting
-TODO
+
+### 🔧 Building blocks
+Using structured LangGraph workflows, we implement the two following agents: one reads the recent activity of the user, and based on that extrapolate keywords and topics to do recommendation; the other is an icebreaker bot that is activated when the user's profile is quite inactive, so the bot tries to capture user's interests trough a multi-turn conversation.
+
+### ✏️ Graph Design
+
+<p align="center">
+  <img src="graphs/feed_builder.png" alt="Architecture" width="400"/>
+</p>
+
 
 # 🚀 Reproducibility and Usage
 
